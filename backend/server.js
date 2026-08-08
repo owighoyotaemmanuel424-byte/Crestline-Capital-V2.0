@@ -79,14 +79,10 @@ app.post('/api/transfer', auth, transferLimiter, async (req, res) => {
     const daily = await Transaction.aggregate([{ $match: { senderId: req.user._id, createdAt: { $gte: todayStart }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } }, fees: { $sum: { $toDouble: '$fee' } } } }]);
     if ((daily[0]?.total || 0) + data.amount > 100000) return res.status(400).json({ message: 'Daily transfer limit exceeded' });
 
-    let created;
     let responsePayload;
     await session.withTransaction(async () => {
       const existing = await TransferRequest.findOne({ userId: req.user._id, key }).session(session);
-      if (existing) {
-        responsePayload = existing.response;
-        return;
-      }
+      if (existing) { responsePayload = existing.response; return; }
       await TransferRequest.create([{ userId: req.user._id, key, statusCode: 102, response: { message: 'Transfer is processing' } }], { session });
       const sender = await User.findById(req.user._id).session(session);
       const receiver = await User.findOne({ accountNumber: data.recipientAccountNumber }).session(session);
@@ -99,7 +95,7 @@ app.post('/api/transfer', auth, transferLimiter, async (req, res) => {
       receiver.balance = mongoose.Types.Decimal128.fromString((Number(receiver.balance.toString()) + data.amount).toFixed(2));
       await sender.save({ session });
       await receiver.save({ session });
-      [created] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(data.amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference: reference() }], { session });
+      const [created] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(data.amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference: reference() }], { session });
       responsePayload = { message: 'Transfer completed successfully', reference: created.reference, amount: data.amount, fee, total: Number(total.toFixed(2)) };
       await TransferRequest.updateOne({ userId: req.user._id, key }, { $set: { statusCode: 201, response: responsePayload } }, { session });
       await AuditLog.create([{ actorId: req.user._id, action: 'TRANSFER_COMPLETED', targetId: receiver._id, reference: created.reference, metadata: { amount: data.amount, fee, type: data.type }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
@@ -126,5 +122,10 @@ app.get('/api/admin/transactions', auth, admin, async (_, res) => res.json({ tra
 app.patch('/api/admin/users/:id/freeze', auth, admin, async (req, res) => { const user = await User.findByIdAndUpdate(req.params.id, { isFrozen: Boolean(req.body.frozen) }, { new: true }); if (!user) return res.status(404).json({ message: 'User not found' }); await audit(req, user.isFrozen ? 'ADMIN_FREEZE_ACCOUNT' : 'ADMIN_UNFREEZE_ACCOUNT', user._id); res.json({ user: publicUser(user) }); });
 app.get('/api/admin/audit-logs', auth, admin, async (_, res) => res.json({ logs: await AuditLog.find().sort({ createdAt: -1 }).limit(500).populate('actorId', 'name email') }));
 
-const port = process.env.PORT || 4000;
-mongoose.connect(process.env.MONGODB_URI).then(() => app.listen(port, () => console.log(`Crestline API listening on ${port}`))).catch(err => { console.error('MongoDB connection failed', err); process.exit(1); });
+// Keep local development working while also allowing Vercel to import the Express app.
+if (require.main === module) {
+  const port = process.env.PORT || 4000;
+  mongoose.connect(process.env.MONGODB_URI).then(() => app.listen(port, () => console.log(`Crestline API listening on ${port}`))).catch(err => { console.error('MongoDB connection failed', err); process.exit(1); });
+}
+
+module.exports = app;
