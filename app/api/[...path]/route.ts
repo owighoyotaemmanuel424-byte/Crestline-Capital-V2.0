@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { timingSafeEqual, randomInt } from 'crypto';
 import { z } from 'zod';
 import { connectMongo, User, Transaction, TransferRequest, AuditLog, authenticatedUser, publicUser, signToken, feeFor, makeReference, validIdempotencyKey, bcrypt, mongoose, audit } from '@/lib/server-banking';
 
@@ -7,10 +8,25 @@ export const dynamic = 'force-dynamic';
 
 const registerSchema = z.object({ name: z.string().trim().min(2).max(80), email: z.string().trim().email(), password: z.string().min(8).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1).max(128) });
+const bootstrapSchema = z.object({ setupSecret: z.string().min(16).max(256), name: z.string().trim().min(2).max(80), email: z.string().trim().email(), password: z.string().min(12).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const transferSchema = z.object({ recipientAccountNumber: z.string().regex(/^\d{10,20}$/), amount: z.number().positive().finite().max(1_000_000), type: z.enum(['internal', 'external']), description: z.string().max(160).optional(), pin: z.string().regex(/^\d{4,6}$/) });
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status });
 const errorMessage = (e: any, fallback: string) => e?.issues?.[0]?.message || e?.message || fallback;
+
+function secretsMatch(provided: string, configured: string) {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(configured);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function createUniqueAccountNumber() {
+  for (let i = 0; i < 20; i += 1) {
+    const accountNumber = String(randomInt(1_000_000_000, 10_000_000_000));
+    if (!(await User.exists({ accountNumber }))) return accountNumber;
+  }
+  throw new Error('Unable to generate a unique account number');
+}
 
 async function route(request: Request, path: string[]) {
   await connectMongo();
@@ -19,17 +35,61 @@ async function route(request: Request, path: string[]) {
 
   if (method === 'GET' && key === 'health') return json({ ok: true, service: 'crestline-api' });
 
+  // First-admin bootstrap: available only while no admin exists and only with a
+  // dedicated server-side secret. Never put the secret or password in source control.
+  if (method === 'POST' && key === 'admin/bootstrap') {
+    try {
+      const configuredSecret = process.env.ADMIN_BOOTSTRAP_SECRET;
+      if (!configuredSecret || configuredSecret.length < 16) return json({ message: 'Admin bootstrap is not configured.' }, 503);
+      const data = bootstrapSchema.parse(await request.json());
+      if (!secretsMatch(data.setupSecret, configuredSecret)) return json({ message: 'Invalid setup secret.' }, 403);
+      if (await User.exists({ isAdmin: true })) return json({ message: 'Initial administrator has already been created. Bootstrap is permanently closed.' }, 410);
+
+      const email = data.email.toLowerCase();
+      const existing = await User.findOne({ email });
+      if (existing) return json({ message: 'An account with this email already exists. Use the existing account or choose another email.' }, 409);
+
+      const accountNumber = await createUniqueAccountNumber();
+      const user = await User.create({
+        name: data.name,
+        email,
+        password: await bcrypt.hash(data.password, 12),
+        pin: await bcrypt.hash(data.pin, 12),
+        accountNumber,
+        balance: mongoose.Types.Decimal128.fromString('0'),
+        isAdmin: true,
+        isFrozen: false,
+      });
+
+      await AuditLog.create({
+        actorId: user._id,
+        targetId: user._id,
+        action: 'ADMIN_BOOTSTRAP_CREATED',
+        metadata: { email: user.email },
+        ip: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || '',
+        userAgent: request.headers.get('user-agent') || '',
+      });
+
+      return json({
+        message: 'Administrator created successfully. Bootstrap is now permanently closed.',
+        user: publicUser(user),
+      }, 201);
+    } catch (e: any) {
+      return json({ message: errorMessage(e, 'Unable to create administrator') }, e?.issues ? 400 : 500);
+    }
+  }
+
+  if (method === 'GET' && key === 'admin/bootstrap/status') {
+    const adminExists = Boolean(await User.exists({ isAdmin: true }));
+    return json({ configured: Boolean(process.env.ADMIN_BOOTSTRAP_SECRET), available: Boolean(process.env.ADMIN_BOOTSTRAP_SECRET) && !adminExists });
+  }
+
   if (method === 'POST' && key === 'auth/register') {
     try {
       const data = registerSchema.parse(await request.json());
       const email = data.email.toLowerCase();
       if (await User.exists({ email })) return json({ message: 'Email already registered' }, 409);
-      let accountNumber = '';
-      for (let i = 0; i < 10; i += 1) {
-        accountNumber = String(Math.floor(1_000_000_000 + Math.random() * 9_000_000_000));
-        if (!(await User.exists({ accountNumber }))) break;
-      }
-      if (!accountNumber) return json({ message: 'Unable to generate account number' }, 500);
+      const accountNumber = await createUniqueAccountNumber();
       const user = await User.create({ name: data.name, email, password: await bcrypt.hash(data.password, 12), pin: await bcrypt.hash(data.pin, 12), accountNumber, balance: mongoose.Types.Decimal128.fromString('0') });
       await AuditLog.create({ actorId: user._id, action: 'AUTH_REGISTER', targetId: user._id, ip: request.headers.get('x-forwarded-for') || '', userAgent: request.headers.get('user-agent') || '' });
       return json({ token: signToken(user), user: publicUser(user) }, 201);
