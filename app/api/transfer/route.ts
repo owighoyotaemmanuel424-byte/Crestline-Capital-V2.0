@@ -1,4 +1,0 @@
-import { NextResponse } from "next/server";
-import { Decimal } from "decimal.js";
-import { getAccountBalance, createLedgerTransaction } from "@/lib/ledger/core";
-export async function POST(req:Request){try{const {fromAccountId,toAccountId,amount}=await req.json(); if(!fromAccountId||!toAccountId||!amount)return NextResponse.json({error:"Missing transfer fields"},{status:400}); const value=new Decimal(amount); if(!value.isFinite()||value.lte(0))return NextResponse.json({error:"Invalid amount"},{status:400}); const balance=await getAccountBalance(fromAccountId); if(balance.lt(value))return NextResponse.json({error:"Insufficient funds"},{status:400}); const tx=await createLedgerTransaction({description:`Transfer to ${toAccountId}`,entries:[{accountId:fromAccountId,amount:value.negated()},{accountId:toAccountId,amount:value}]}); return NextResponse.json(tx);}catch{return NextResponse.json({error:"Transaction failed"},{status:500});}}
