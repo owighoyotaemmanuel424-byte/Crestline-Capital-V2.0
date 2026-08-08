@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { Decimal } from "decimal.js";
+
+type LedgerTransactionClient = Prisma.TransactionClient;
 
 export async function createLedgerTransaction({
   description,
@@ -14,7 +17,7 @@ export async function createLedgerTransaction({
     throw new Error("Transaction is not balanced. Total must be zero.");
   }
 
-  return prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx: LedgerTransactionClient) => {
     const transaction = await tx.transaction.create({
       data: { description },
     });
