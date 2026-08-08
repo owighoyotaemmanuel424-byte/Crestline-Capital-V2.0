@@ -24,6 +24,7 @@ const UserSchema = new Schema({
   balance: { type: Schema.Types.Decimal128, default: 0 },
   isAdmin: { type: Boolean, default: false },
   isFrozen: { type: Boolean, default: false },
+  kycStatus: { type: String, enum: ['verified', 'pending', 'rejected'], default: 'pending', index: true },
 }, { timestamps: true });
 
 const TransactionSchema = new Schema({
@@ -71,6 +72,8 @@ export type UserDoc = {
   balance: mongoose.Types.Decimal128;
   isAdmin: boolean;
   isFrozen: boolean;
+  kycStatus?: 'verified' | 'pending' | 'rejected';
+  createdAt?: Date;
 };
 
 export function publicUser(user: UserDoc) {
