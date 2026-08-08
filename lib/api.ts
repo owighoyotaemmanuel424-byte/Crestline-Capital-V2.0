@@ -1,19 +1,22 @@
 import axios from 'axios';
 
-// In production the Express API is exposed through the same Vercel domain
-// via /api. A localhost default causes registration/login to fail on Vercel.
-const baseURL = process.env.NEXT_PUBLIC_API_URL?.trim() || '/api';
+// The banking UI and API are deployed together. Always use the same-origin
+// API so production can never accidentally call localhost or another host.
+const baseURL = '/api';
 
 export const api = axios.create({
   baseURL,
-  timeout: 15000,
+  timeout: 20000,
   headers: { 'Content-Type': 'application/json' },
 });
 
 api.interceptors.request.use((config) => {
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('crestline_token');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
   }
   return config;
 });
