@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { connectMongo, User, Transaction, TransferRequest, AuditLog, authenticatedUser, publicUser, signToken, feeFor, makeReference, validIdempotencyKey, bcrypt, mongoose, audit } from '@/lib/server-banking';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 const registerSchema = z.object({ name: z.string().trim().min(2).max(80), email: z.string().trim().email(), password: z.string().min(8).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1).max(128) });
 const transferSchema = z.object({ recipientAccountNumber: z.string().regex(/^\d{10,20}$/), amount: z.number().positive().finite().max(1_000_000), type: z.enum(['internal', 'external']), description: z.string().max(160).optional(), pin: z.string().regex(/^\d{4,6}$/) });
