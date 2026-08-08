@@ -21,7 +21,7 @@ export default function Home() {
         <div className="nav-links">
           <a href="#services">Quick Links</a><a href="#products">Services</a><a href="#wealth">Products</a><a href="#security">Security</a>
         </div>
-        <div className="nav-actions"><button className="ghost">Login</button><button className="primary">Register / Get Started Free</button></div>
+        <div className="nav-actions"><a className="ghost" href="/dashboard">Login</a><button className="primary">Register / Get Started Free</button></div>
       </nav>
 
       <section id="top" className="hero shell">
@@ -29,7 +29,7 @@ export default function Home() {
           <div className="pill"><span className="pulse" /> Next-Gen Financial Ecosystem</div>
           <h1>Wealth Management <span>Without Limits.</span></h1>
           <p>Experience a seamless blend of traditional banking and digital innovation, built around the way modern wealth moves.</p>
-          <div className="hero-actions"><button className="primary large">Get Started Free <span>→</span></button><button className="ghost large">How It Works <span>↗</span></button></div>
+          <div className="hero-actions"><a className="primary large" href="/dashboard">Get Started Free <span>→</span></a><button className="ghost large">How It Works <span>↗</span></button></div>
           <div className="metrics"><div><strong>10,000+</strong><small>Active Users</small></div><div><strong>99.9%</strong><small>Platform Uptime</small></div><div><strong>$500M+</strong><small>Transactions</small></div></div>
         </div>
         <div className="hero-visual">
