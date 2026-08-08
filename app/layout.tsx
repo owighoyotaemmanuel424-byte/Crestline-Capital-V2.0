@@ -1,8 +1,9 @@
 import "./globals.css";
+import "./banking.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Crestline Capital | Wealth Management Without Limits",
+  title: "Crestline Capital | Digital Banking",
   description: "Modern digital banking and wealth management experience.",
 };
 
