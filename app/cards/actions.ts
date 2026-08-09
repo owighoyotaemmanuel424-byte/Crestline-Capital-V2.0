@@ -12,7 +12,7 @@ async function getUser(token: string) {
   const payload = jwt.verify(token, secret) as Session;
   if (!payload.userId || !mongoose.isValidObjectId(payload.userId)) throw new Error("Authentication required");
   await connectMongo();
-  const user = await User.findById(payload.userId).select("name email accountNumber isFrozen");
+  const user = await User.findById(payload.userId).select("name email accountNumber isFrozen balance");
   if (!user) throw new Error("Account not found");
   if (user.isFrozen) throw new Error("Your account is frozen");
   return user;
@@ -21,7 +21,19 @@ async function getUser(token: string) {
 export async function getMyCards(token: string) {
   const user = await getUser(token);
   const cards = await Card.find({ userId: user._id }).sort({ createdAt: -1 }).lean();
-  return cards.map((card: any) => ({ id: String(card._id), last4: card.last4, brand: card.brand, type: card.type, status: card.status, spendingLimit: Number(card.spendingLimit?.toString() || 0), issuedAt: card.issuedAt, createdAt: card.createdAt }));
+  return {
+    balance: Number(user.balance?.toString?.() || user.balance || 0),
+    cards: cards.map((card: any) => ({
+      id: String(card._id),
+      last4: card.last4,
+      brand: card.brand,
+      type: card.type,
+      status: card.status,
+      spendingLimit: Number(card.spendingLimit?.toString() || 0),
+      issuedAt: card.issuedAt,
+      createdAt: card.createdAt,
+    })),
+  };
 }
 
 export async function applyForCard(token: string, type: "virtual" | "physical" = "virtual", brand: "visa" | "mastercard" = "visa") {
