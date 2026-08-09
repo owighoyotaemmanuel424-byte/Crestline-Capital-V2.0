@@ -1,6 +1,7 @@
+import type { ReactNode } from 'react';
 import DashboardCard from './DashboardCard';
 
-function Icon({ children }: { children: React.ReactNode }) {
+function Icon({ children }: { children: ReactNode }) {
   return <span aria-hidden="true" className="text-lg">{children}</span>;
 }
 
