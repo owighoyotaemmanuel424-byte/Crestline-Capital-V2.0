@@ -15,7 +15,7 @@ type AdminUser = {
   accountNumber: string;
   balance: number;
   isFrozen: boolean;
-  kycStatus?: 'verified' | 'pending' | 'rejected';
+  kycStatus?: 'unverified' | 'verified' | 'pending' | 'rejected';
   createdAt?: string;
 };
 
