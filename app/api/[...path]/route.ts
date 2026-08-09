@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { timingSafeEqual, randomInt } from 'crypto';
+import { timingSafeEqual, randomInt, randomInt as secureRandomInt } from 'crypto';
 import { z } from 'zod';
-import { connectMongo, User, Transaction, TransferRequest, AuditLog, authenticatedUser, publicUser, signToken, feeFor, makeReference, validIdempotencyKey, bcrypt, mongoose, audit } from '@/lib/server-banking';
+import { connectMongo, User, Transaction, Card, TransferRequest, AuditLog, authenticatedUser, publicUser, signToken, feeFor, makeReference, validIdempotencyKey, bcrypt, mongoose, audit } from '@/lib/server-banking';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -10,207 +10,74 @@ const registerSchema = z.object({ name: z.string().trim().min(2).max(80), email:
 const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1).max(128) });
 const bootstrapSchema = z.object({ setupSecret: z.string().min(16).max(256), name: z.string().trim().min(2).max(80), email: z.string().trim().email(), password: z.string().min(12).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const transferSchema = z.object({ recipientAccountNumber: z.string().regex(/^\d{10,20}$/), amount: z.number().positive().finite().max(1_000_000), type: z.enum(['internal', 'external']), description: z.string().max(160).optional(), pin: z.string().regex(/^\d{4,6}$/) });
+const cardCreateSchema = z.object({ userId: z.string().refine(v => mongoose.isValidObjectId(v), 'Invalid user id'), brand: z.enum(['visa','mastercard']).default('visa'), type: z.enum(['virtual','physical']).default('virtual'), spendingLimit: z.number().nonnegative().finite().max(1_000_000).default(1000) });
+const cardPatchSchema = z.object({ status: z.enum(['active','frozen','revoked']).optional(), spendingLimit: z.number().nonnegative().finite().max(1_000_000).optional(), freezeReason: z.string().max(240).optional() });
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status });
 const errorMessage = (e: any, fallback: string) => e?.issues?.[0]?.message || e?.message || fallback;
-
-function secretsMatch(provided: string, configured: string) {
-  const a = Buffer.from(provided);
-  const b = Buffer.from(configured);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-async function createUniqueAccountNumber() {
-  for (let i = 0; i < 20; i += 1) {
-    const accountNumber = String(randomInt(1_000_000_000, 10_000_000_000));
-    if (!(await User.exists({ accountNumber }))) return accountNumber;
-  }
-  throw new Error('Unable to generate a unique account number');
-}
+function secretsMatch(provided: string, configured: string) { const a = Buffer.from(provided); const b = Buffer.from(configured); return a.length === b.length && timingSafeEqual(a, b); }
+async function createUniqueAccountNumber() { for (let i = 0; i < 20; i += 1) { const accountNumber = String(randomInt(1_000_000_000, 10_000_000_000)); if (!(await User.exists({ accountNumber }))) return accountNumber; } throw new Error('Unable to generate a unique account number'); }
+function cardPublic(card: any) { return { id: card._id.toString(), userId: card.userId?.toString(), userName: card.userId?.name || card._userName || '', userEmail: card.userId?.email || card._userEmail || '', last4: card.last4, brand: card.brand, type: card.type, status: card.status, spendingLimit: Number(card.spendingLimit?.toString() || 0), mccRestrictions: card.mccRestrictions || [], issuedAt: card.issuedAt, createdAt: card.createdAt, revokedAt: card.revokedAt }; }
 
 async function route(request: Request, path: string[]) {
   await connectMongo();
   const method = request.method.toUpperCase();
   const key = path.join('/');
-
   if (method === 'GET' && key === 'health') return json({ ok: true, service: 'crestline-api' });
 
   if (method === 'POST' && key === 'admin/bootstrap') {
-    try {
-      const configuredSecret = process.env.ADMIN_BOOTSTRAP_SECRET;
-      if (!configuredSecret || configuredSecret.length < 16) return json({ message: 'Admin bootstrap is not configured.' }, 503);
-      const data = bootstrapSchema.parse(await request.json());
-      if (!secretsMatch(data.setupSecret, configuredSecret)) return json({ message: 'Invalid setup secret.' }, 403);
-      if (await User.exists({ isAdmin: true })) return json({ message: 'Initial administrator has already been created. Bootstrap is permanently closed.' }, 410);
-      const email = data.email.toLowerCase();
-      if (await User.findOne({ email })) return json({ message: 'An account with this email already exists. Use the existing account or choose another email.' }, 409);
-      const accountNumber = await createUniqueAccountNumber();
-      const user = await User.create({ name: data.name, email, password: await bcrypt.hash(data.password, 12), pin: await bcrypt.hash(data.pin, 12), accountNumber, balance: mongoose.Types.Decimal128.fromString('0'), isAdmin: true, isFrozen: false, kycStatus: 'verified' });
-      await AuditLog.create({ actorId: user._id, targetId: user._id, action: 'ADMIN_BOOTSTRAP_CREATED', metadata: { email: user.email }, ip: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || '', userAgent: request.headers.get('user-agent') || '' });
-      return json({ message: 'Administrator created successfully. Bootstrap is now permanently closed.', user: publicUser(user) }, 201);
-    } catch (e: any) { return json({ message: errorMessage(e, 'Unable to create administrator') }, e?.issues ? 400 : 500); }
+    try { const configuredSecret = process.env.ADMIN_BOOTSTRAP_SECRET; if (!configuredSecret || configuredSecret.length < 16) return json({ message: 'Admin bootstrap is not configured.' }, 503); const data = bootstrapSchema.parse(await request.json()); if (!secretsMatch(data.setupSecret, configuredSecret)) return json({ message: 'Invalid setup secret.' }, 403); if (await User.exists({ isAdmin: true })) return json({ message: 'Initial administrator has already been created. Bootstrap is permanently closed.' }, 410); const email = data.email.toLowerCase(); if (await User.findOne({ email })) return json({ message: 'An account with this email already exists. Use the existing account or choose another email.' }, 409); const accountNumber = await createUniqueAccountNumber(); const user = await User.create({ name: data.name, email, password: await bcrypt.hash(data.password, 12), pin: await bcrypt.hash(data.pin, 12), accountNumber, balance: mongoose.Types.Decimal128.fromString('0'), isAdmin: true, isFrozen: false, kycStatus: 'verified' }); await AuditLog.create({ actorId: user._id, targetId: user._id, action: 'ADMIN_BOOTSTRAP_CREATED', metadata: { email: user.email }, ip: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || '', userAgent: request.headers.get('user-agent') || '' }); return json({ message: 'Administrator created successfully. Bootstrap is now permanently closed.', user: publicUser(user) }, 201); } catch (e: any) { return json({ message: errorMessage(e, 'Unable to create administrator') }, e?.issues ? 400 : 500); }
   }
+  if (method === 'GET' && key === 'admin/bootstrap/status') { const adminExists = Boolean(await User.exists({ isAdmin: true })); return json({ configured: Boolean(process.env.ADMIN_BOOTSTRAP_SECRET), available: Boolean(process.env.ADMIN_BOOTSTRAP_SECRET) && !adminExists }); }
+  if (method === 'POST' && key === 'auth/register') { try { const data = registerSchema.parse(await request.json()); const email = data.email.toLowerCase(); if (await User.exists({ email })) return json({ message: 'Email already registered' }, 409); const accountNumber = await createUniqueAccountNumber(); const user = await User.create({ name: data.name, email, password: await bcrypt.hash(data.password, 12), pin: await bcrypt.hash(data.pin, 12), accountNumber, balance: mongoose.Types.Decimal128.fromString('0'), kycStatus: 'pending' }); await AuditLog.create({ actorId: user._id, action: 'AUTH_REGISTER', targetId: user._id, ip: request.headers.get('x-forwarded-for') || '', userAgent: request.headers.get('user-agent') || '' }); return json({ token: signToken(user), user: publicUser(user) }, 201); } catch (e: any) { return json({ message: errorMessage(e, 'Unable to create account') }, 400); } }
+  if (method === 'POST' && key === 'auth/login') { try { const data = loginSchema.parse(await request.json()); const user = await User.findOne({ email: data.email.toLowerCase() }) as any; if (!user || !(await bcrypt.compare(data.password, user.password))) return json({ message: 'Invalid email or password' }, 401); if (user.isFrozen) return json({ message: 'Account is frozen. Contact support.' }, 403); await AuditLog.create({ actorId: user._id, action: 'AUTH_LOGIN', targetId: user._id, ip: request.headers.get('x-forwarded-for') || '', userAgent: request.headers.get('user-agent') || '' }); user.lastLoginAt = new Date(); await user.save(); return json({ token: signToken(user), user: publicUser(user) }); } catch (e: any) { return json({ message: errorMessage(e, 'Unable to sign in') }, 400); } }
 
-  if (method === 'GET' && key === 'admin/bootstrap/status') {
-    const adminExists = Boolean(await User.exists({ isAdmin: true }));
-    return json({ configured: Boolean(process.env.ADMIN_BOOTSTRAP_SECRET), available: Boolean(process.env.ADMIN_BOOTSTRAP_SECRET) && !adminExists });
-  }
-
-  if (method === 'POST' && key === 'auth/register') {
-    try {
-      const data = registerSchema.parse(await request.json());
-      const email = data.email.toLowerCase();
-      if (await User.exists({ email })) return json({ message: 'Email already registered' }, 409);
-      const accountNumber = await createUniqueAccountNumber();
-      const user = await User.create({ name: data.name, email, password: await bcrypt.hash(data.password, 12), pin: await bcrypt.hash(data.pin, 12), accountNumber, balance: mongoose.Types.Decimal128.fromString('0'), kycStatus: 'pending' });
-      await AuditLog.create({ actorId: user._id, action: 'AUTH_REGISTER', targetId: user._id, ip: request.headers.get('x-forwarded-for') || '', userAgent: request.headers.get('user-agent') || '' });
-      return json({ token: signToken(user), user: publicUser(user) }, 201);
-    } catch (e: any) { return json({ message: errorMessage(e, 'Unable to create account') }, 400); }
-  }
-
-  if (method === 'POST' && key === 'auth/login') {
-    try {
-      const data = loginSchema.parse(await request.json());
-      const user = await User.findOne({ email: data.email.toLowerCase() }) as any;
-      if (!user || !(await bcrypt.compare(data.password, user.password))) return json({ message: 'Invalid email or password' }, 401);
-      if (user.isFrozen) return json({ message: 'Account is frozen. Contact support.' }, 403);
-      await AuditLog.create({ actorId: user._id, action: 'AUTH_LOGIN', targetId: user._id, ip: request.headers.get('x-forwarded-for') || '', userAgent: request.headers.get('user-agent') || '' });
-      return json({ token: signToken(user), user: publicUser(user) });
-    } catch (e: any) { return json({ message: errorMessage(e, 'Unable to sign in') }, 400); }
-  }
-
-  let user;
-  try { user = await authenticatedUser(request); } catch { return json({ message: 'Authentication required' }, 401); }
-
+  let user; try { user = await authenticatedUser(request); } catch { return json({ message: 'Authentication required' }, 401); }
   if (method === 'GET' && key === 'user') return json({ user: publicUser(user) });
+  if (method === 'GET' && key === 'transactions') { const docs = await Transaction.find({ $or: [{ senderId: user._id }, { receiverId: user._id }] }).sort({ createdAt: -1 }).limit(100).populate('senderId', 'name accountNumber').populate('receiverId', 'name accountNumber'); return json({ transactions: docs.map((t: any) => { const sender = t.senderId?._id?.toString(); const current = user._id.toString(); const credit = sender !== current; return { id: t._id, reference: t.reference, amount: Number(t.amount.toString()), fee: Number(t.fee?.toString() || 0), type: t.type, status: t.status, description: t.description || '', createdAt: t.occurredAt || t.createdAt, direction: credit ? 'credit' : 'debit', counterparty: credit ? (t.senderId?.name || 'Administrator') : (t.receiverId?.name || 'Recipient'), displayOnly: Boolean(t.displayOnly), affectsBalance: t.affectsBalance !== false }; }) }); }
+  if (method === 'GET' && key.startsWith('transfer/recipient/')) { const accountNumber = key.split('/').pop() || ''; if (!/^\d{10,20}$/.test(accountNumber)) return json({ message: 'Invalid account number' }, 400); const recipient = await User.findOne({ accountNumber }).select('name accountNumber isFrozen') as any; if (!recipient) return json({ message: 'Recipient account not found' }, 404); return json({ recipient: { name: recipient.name, accountNumber: recipient.accountNumber, isFrozen: recipient.isFrozen } }); }
+  if (method === 'POST' && key === 'transfer') { const idempotency = request.headers.get('Idempotency-Key'); if (!validIdempotencyKey(idempotency)) return json({ message: 'A valid Idempotency-Key header is required' }, 400); try { const data = transferSchema.parse(await request.json()); if (data.recipientAccountNumber === user.accountNumber) return json({ message: 'You cannot transfer to yourself' }, 400); if (user.isFrozen) return json({ message: 'Your account is frozen' }, 403); if (!(await bcrypt.compare(data.pin, user.pin))) return json({ message: 'Incorrect transfer PIN' }, 401); const fee = feeFor(data.amount, data.type); const total = Number((data.amount + fee).toFixed(2)); const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0); const daily = await Transaction.aggregate([{ $match: { senderId: user._id, createdAt: { $gte: todayStart }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]); if ((daily[0]?.total || 0) + data.amount > 100_000) return json({ message: 'Daily transfer limit exceeded' }, 400); const existing = await TransferRequest.findOne({ userId: user._id, key: idempotency }); if (existing) return json(existing.response, existing.statusCode || 200); const session = await mongoose.startSession(); try { let responsePayload: any; await session.withTransaction(async () => { const duplicate = await TransferRequest.findOne({ userId: user._id, key: idempotency }).session(session); if (duplicate) { responsePayload = duplicate.response; return; } const sender = await User.findById(user._id).session(session) as any; const receiver = await User.findOne({ accountNumber: data.recipientAccountNumber }).session(session) as any; if (!sender || sender.isFrozen) throw Object.assign(new Error('Sender account is unavailable'), { status: 403 }); if (!receiver) throw Object.assign(new Error('Recipient account not found'), { status: 404 }); if (receiver.isFrozen) throw Object.assign(new Error('Recipient account is frozen'), { status: 403 }); const senderBalance = Number(sender.balance?.toString() || 0); if (senderBalance < total) throw Object.assign(new Error('Insufficient balance'), { status: 400 }); sender.balance = mongoose.Types.Decimal128.fromString((senderBalance - total).toFixed(2)); receiver.balance = mongoose.Types.Decimal128.fromString((Number(receiver.balance?.toString() || 0) + data.amount).toFixed(2)); await sender.save({ session }); await receiver.save({ session }); const reference = makeReference(); const [tx] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(data.amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference }], { session }); responsePayload = { message: 'Transfer completed successfully', reference: tx.reference, amount: data.amount, fee, total }; await TransferRequest.create([{ userId: sender._id, key: idempotency, statusCode: 201, response: responsePayload }], { session }); await AuditLog.create([{ actorId: sender._id, action: 'TRANSFER_COMPLETED', targetId: receiver._id, reference, metadata: { amount: data.amount, fee, type: data.type }, ip: request.headers.get('x-forwarded-for') || '', userAgent: request.headers.get('user-agent') || '' }], { session }); }); return json(responsePayload, 201); } finally { await session.endSession(); } } catch (e: any) { if (e?.code === 11000) { const duplicate = await TransferRequest.findOne({ userId: user._id, key: idempotency }); if (duplicate) return json(duplicate.response, duplicate.statusCode || 200); } return json({ message: e?.message || 'Transfer failed' }, e?.status || 500); } }
 
-  if (method === 'GET' && key === 'transactions') {
-    const docs = await Transaction.find({ $or: [{ senderId: user._id }, { receiverId: user._id }] }).sort({ createdAt: -1 }).limit(100).populate('senderId', 'name accountNumber').populate('receiverId', 'name accountNumber');
-    return json({ transactions: docs.map((t: any) => ({ id: t._id, reference: t.reference, amount: Number(t.amount.toString()), fee: Number(t.fee.toString()), type: t.type, status: t.status, description: t.description || '', createdAt: t.createdAt, direction: t.senderId._id.toString() === user._id.toString() ? 'debit' : 'credit', counterparty: t.senderId._id.toString() === user._id.toString() ? t.receiverId.name : t.senderId.name })) });
+  if (!user.isAdmin && key.startsWith('admin/')) return json({ message: 'Admin access required' }, 403);
+  if (method === 'GET' && key === 'admin/metrics') { const [depositAgg, pendingDepositAgg, transferAgg, pendingTransferAgg, userCount, frozenCount] = await Promise.all([Transaction.aggregate([{ $match: { receiverId: { $exists: true }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]), Transaction.aggregate([{ $match: { receiverId: { $exists: true }, status: 'pending' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]), Transaction.aggregate([{ $match: { senderId: { $exists: true }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]), Transaction.aggregate([{ $match: { senderId: { $exists: true }, status: 'pending' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]), User.countDocuments(), User.countDocuments({ isFrozen: true })]); return json({ metrics: { totalDeposits: depositAgg[0]?.total || 0, pendingDeposits: pendingDepositAgg[0]?.total || 0, totalTransfers: transferAgg[0]?.total || 0, pendingTransfers: pendingTransferAgg[0]?.total || 0, totalUsers: userCount, blockedUsers: frozenCount, updatedAt: new Date().toISOString() } }); }
+  if (method === 'GET' && key === 'admin/users') { const users = await User.find().select('-password -pin').sort({ createdAt: -1 }).limit(500); return json({ users: users.map((u: any) => ({ ...publicUser(u), createdAt: u.createdAt })) }); }
+  if (method === 'GET' && key === 'admin/transactions') return json({ transactions: await Transaction.find().sort({ createdAt: -1 }).limit(500) });
+  if (method === 'GET' && key === 'admin/deposits') return json({ deposits: await Transaction.find({ receiverId: { $exists: true } }).sort({ createdAt: -1 }).limit(500) });
+  if (method === 'GET' && key === 'admin/transfers') return json({ transfers: await Transaction.find({ senderId: { $exists: true } }).sort({ createdAt: -1 }).limit(500) });
+
+  if (method === 'GET' && key === 'admin/cards') {
+    const cards = await Card.find().sort({ createdAt: -1 }).limit(1000).populate('userId', 'name email accountNumber');
+    return json({ cards: cards.map((c: any) => cardPublic(c)) });
+  }
+  if (method === 'POST' && key === 'admin/cards') {
+    const data = cardCreateSchema.parse(await request.json());
+    const target = await User.findById(data.userId).select('name email accountNumber');
+    if (!target) return json({ message: 'Customer not found' }, 404);
+    const last4 = String(secureRandomInt(0, 10000)).padStart(4, '0');
+    const card = await Card.create({ userId: target._id, brand: data.brand, type: data.type, last4, status: 'active', spendingLimit: mongoose.Types.Decimal128.fromString(data.spendingLimit.toFixed(2)), issuedAt: new Date() });
+    await audit('ADMIN_CARD_ISSUED', user._id, target._id, { cardId: card._id.toString(), last4, type: data.type, brand: data.brand }, undefined, request);
+    return json({ card: cardPublic({ ...card.toObject(), userId: target }) }, 201);
+  }
+  if (method === 'PATCH' && key.startsWith('admin/cards/')) {
+    const id = key.split('/')[2];
+    if (!mongoose.isValidObjectId(id)) return json({ message: 'Invalid card id' }, 400);
+    const data = cardPatchSchema.parse(await request.json());
+    const existing = await Card.findById(id).populate('userId', 'name email accountNumber') as any;
+    if (!existing) return json({ message: 'Card not found' }, 404);
+    const update: any = {};
+    if (data.spendingLimit !== undefined) update.spendingLimit = mongoose.Types.Decimal128.fromString(data.spendingLimit.toFixed(2));
+    if (data.status) { update.status = data.status; if (data.status === 'revoked') update.revokedAt = new Date(); if (data.status === 'frozen') update.freezeReason = data.freezeReason || 'Frozen by administrator'; if (data.status === 'active') update.freezeReason = ''; }
+    const card = await Card.findByIdAndUpdate(id, update, { new: true }).populate('userId', 'name email accountNumber') as any;
+    await audit(`ADMIN_CARD_${String(data.status || 'UPDATE').toUpperCase()}`, user._id, existing.userId?._id, { cardId: id, status: data.status, spendingLimit: data.spendingLimit, freezeReason: data.freezeReason }, undefined, request);
+    return json({ card: cardPublic(card) });
   }
 
-  if (method === 'GET' && key.startsWith('transfer/recipient/')) {
-    const accountNumber = key.split('/').pop() || '';
-    if (!/^\d{10,20}$/.test(accountNumber)) return json({ message: 'Invalid account number' }, 400);
-    const recipient = await User.findOne({ accountNumber }).select('name accountNumber isFrozen') as any;
-    if (!recipient) return json({ message: 'Recipient account not found' }, 404);
-    return json({ recipient: { name: recipient.name, accountNumber: recipient.accountNumber, isFrozen: recipient.isFrozen } });
-  }
-
-  if (method === 'POST' && key === 'transfer') {
-    const idempotency = request.headers.get('Idempotency-Key');
-    if (!validIdempotencyKey(idempotency)) return json({ message: 'A valid Idempotency-Key header is required' }, 400);
-    const data = transferSchema.parse(await request.json());
-    if (data.recipientAccountNumber === user.accountNumber) return json({ message: 'You cannot transfer to yourself' }, 400);
-    if (user.isFrozen) return json({ message: 'Your account is frozen' }, 403);
-    if (!(await bcrypt.compare(data.pin, user.pin))) return json({ message: 'Incorrect transfer PIN' }, 401);
-    const fee = feeFor(data.amount, data.type);
-    const total = Number((data.amount + fee).toFixed(2));
-    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const daily = await Transaction.aggregate([{ $match: { senderId: user._id, createdAt: { $gte: todayStart }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]);
-    if ((daily[0]?.total || 0) + data.amount > 100_000) return json({ message: 'Daily transfer limit exceeded' }, 400);
-    const existing = await TransferRequest.findOne({ userId: user._id, key: idempotency });
-    if (existing) return json(existing.response, existing.statusCode || 200);
-    const session = await mongoose.startSession();
-    try {
-      let responsePayload: any;
-      await session.withTransaction(async () => {
-        const duplicate = await TransferRequest.findOne({ userId: user._id, key: idempotency }).session(session);
-        if (duplicate) { responsePayload = duplicate.response; return; }
-        const sender = await User.findById(user._id).session(session) as any;
-        const receiver = await User.findOne({ accountNumber: data.recipientAccountNumber }).session(session) as any;
-        if (!sender || sender.isFrozen) throw Object.assign(new Error('Sender account is unavailable'), { status: 403 });
-        if (!receiver) throw Object.assign(new Error('Recipient account not found'), { status: 404 });
-        if (receiver.isFrozen) throw Object.assign(new Error('Recipient account is frozen'), { status: 403 });
-        const senderBalance = Number(sender.balance?.toString() || 0);
-        if (senderBalance < total) throw Object.assign(new Error('Insufficient balance'), { status: 400 });
-        sender.balance = mongoose.Types.Decimal128.fromString((senderBalance - total).toFixed(2));
-        receiver.balance = mongoose.Types.Decimal128.fromString((Number(receiver.balance?.toString() || 0) + data.amount).toFixed(2));
-        await sender.save({ session }); await receiver.save({ session });
-        const reference = makeReference();
-        const [tx] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(data.amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference }], { session });
-        responsePayload = { message: 'Transfer completed successfully', reference: tx.reference, amount: data.amount, fee, total };
-        await TransferRequest.create([{ userId: sender._id, key: idempotency, statusCode: 201, response: responsePayload }], { session });
-        await AuditLog.create([{ actorId: sender._id, action: 'TRANSFER_COMPLETED', targetId: receiver._id, reference, metadata: { amount: data.amount, fee, type: data.type }, ip: request.headers.get('x-forwarded-for') || '', userAgent: request.headers.get('user-agent') || '' }], { session });
-      });
-      return json(responsePayload, 201);
-    } catch (e: any) {
-      if (e?.code === 11000) { const duplicate = await TransferRequest.findOne({ userId: user._id, key: idempotency }); if (duplicate) return json(duplicate.response, duplicate.statusCode || 200); }
-      return json({ message: e?.message || 'Transfer failed' }, e?.status || 500);
-    } finally { await session.endSession(); }
-  }
-
-  if (method === 'GET' && key === 'admin/metrics') {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    const [depositAgg, pendingDepositAgg, transferAgg, pendingTransferAgg, userCount, frozenCount] = await Promise.all([
-      Transaction.aggregate([{ $match: { receiverId: { $exists: true }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]),
-      Transaction.aggregate([{ $match: { receiverId: { $exists: true }, status: 'pending' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]),
-      Transaction.aggregate([{ $match: { senderId: { $exists: true }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]),
-      Transaction.aggregate([{ $match: { senderId: { $exists: true }, status: 'pending' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } } } }]),
-      User.countDocuments(), User.countDocuments({ isFrozen: true }),
-    ]);
-    return json({ metrics: { totalDeposits: depositAgg[0]?.total || 0, pendingDeposits: pendingDepositAgg[0]?.total || 0, totalTransfers: transferAgg[0]?.total || 0, pendingTransfers: pendingTransferAgg[0]?.total || 0, totalUsers: userCount, blockedUsers: frozenCount, updatedAt: new Date().toISOString() } });
-  }
-
-  if (method === 'GET' && key === 'admin/users') {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    const users = await User.find().select('-password -pin').sort({ createdAt: -1 }).limit(500);
-    return json({ users: users.map((u: any) => ({ ...publicUser(u), kycStatus: u.kycStatus || 'pending', createdAt: u.createdAt })) });
-  }
-
-  if (method === 'GET' && key === 'admin/transactions') {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    return json({ transactions: await Transaction.find().sort({ createdAt: -1 }).limit(500) });
-  }
-
-  if (method === 'GET' && key === 'admin/deposits') {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    const deposits = await Transaction.find({ receiverId: { $exists: true } }).sort({ createdAt: -1 }).limit(500);
-    return json({ deposits });
-  }
-
-  if (method === 'GET' && key === 'admin/transfers') {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    const transfers = await Transaction.find({ senderId: { $exists: true } }).sort({ createdAt: -1 }).limit(500);
-    return json({ transfers });
-  }
-
-  if (method === 'PATCH' && key.startsWith('admin/users/') && key.endsWith('/freeze')) {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    const targetId = key.split('/')[2];
-    if (!mongoose.isValidObjectId(targetId)) return json({ message: 'Invalid user id' }, 400);
-    const body = await request.json();
-    const target = await User.findByIdAndUpdate(targetId, { isFrozen: Boolean(body.frozen) }, { new: true });
-    if (!target) return json({ message: 'User not found' }, 404);
-    await audit(Boolean(body.frozen) ? 'ADMIN_FREEZE_ACCOUNT' : 'ADMIN_UNFREEZE_ACCOUNT', user._id, target._id, {}, undefined, request);
-    return json({ user: publicUser(target as any) });
-  }
-
-  if (method === 'PATCH' && key.startsWith('admin/users/') && key.endsWith('/kyc')) {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    const targetId = key.split('/')[2];
-    if (!mongoose.isValidObjectId(targetId)) return json({ message: 'Invalid user id' }, 400);
-    const body = z.object({ status: z.enum(['verified', 'pending', 'rejected']) }).parse(await request.json());
-    const target = await User.findByIdAndUpdate(targetId, { kycStatus: body.status }, { new: true }).select('-password -pin');
-    if (!target) return json({ message: 'User not found' }, 404);
-    await audit('ADMIN_UPDATE_KYC', user._id, target._id, { status: body.status }, undefined, request);
-    return json({ user: { ...publicUser(target as any), kycStatus: body.status, createdAt: target.createdAt } });
-  }
-
-  if (method === 'GET' && key === 'admin/audit-logs') {
-    if (!user.isAdmin) return json({ message: 'Admin access required' }, 403);
-    return json({ logs: await AuditLog.find().sort({ createdAt: -1 }).limit(500).populate('actorId', 'name email') });
-  }
-
+  if (method === 'PATCH' && key.startsWith('admin/users/') && key.endsWith('/freeze')) { const targetId = key.split('/')[2]; if (!mongoose.isValidObjectId(targetId)) return json({ message: 'Invalid user id' }, 400); const body = await request.json(); const target = await User.findByIdAndUpdate(targetId, { isFrozen: Boolean(body.frozen) }, { new: true }); if (!target) return json({ message: 'User not found' }, 404); await audit(Boolean(body.frozen) ? 'ADMIN_FREEZE_ACCOUNT' : 'ADMIN_UNFREEZE_ACCOUNT', user._id, target._id, {}, undefined, request); return json({ user: publicUser(target as any) }); }
+  if (method === 'PATCH' && key.startsWith('admin/users/') && key.endsWith('/kyc')) { const targetId = key.split('/')[2]; if (!mongoose.isValidObjectId(targetId)) return json({ message: 'Invalid user id' }, 400); const body = z.object({ status: z.enum(['verified', 'pending', 'rejected', 'unverified']) }).parse(await request.json()); const target = await User.findByIdAndUpdate(targetId, { kycStatus: body.status }, { new: true }).select('-password -pin'); if (!target) return json({ message: 'User not found' }, 404); await audit('ADMIN_UPDATE_KYC', user._id, target._id, { status: body.status }, undefined, request); return json({ user: { ...publicUser(target as any), createdAt: target.createdAt } }); }
+  if (method === 'GET' && key === 'admin/audit-logs') return json({ logs: await AuditLog.find().sort({ createdAt: -1 }).limit(500).populate('actorId', 'name email') });
   return json({ message: 'API route not found' }, 404);
 }
 
-export async function GET(request: Request, context: { params: { path: string[] } }) {
-  try { return await route(request, context.params.path || []); } catch (e: any) { console.error('GET API error', e); return json({ message: 'Banking service temporarily unavailable' }, 503); }
-}
-export async function POST(request: Request, context: { params: { path: string[] } }) {
-  try { return await route(request, context.params.path || []); } catch (e: any) { console.error('POST API error', e); return json({ message: errorMessage(e, 'Request failed') }, 400); }
-}
-export async function PATCH(request: Request, context: { params: { path: string[] } }) {
-  try { return await route(request, context.params.path || []); } catch (e: any) { console.error('PATCH API error', e); return json({ message: errorMessage(e, 'Request failed') }, 400); }
-}
+export async function GET(request: Request, context: { params: { path: string[] } }) { try { return await route(request, context.params.path || []); } catch (e: any) { console.error('GET API error', e); return json({ message: 'Banking service temporarily unavailable' }, 503); } }
+export async function POST(request: Request, context: { params: { path: string[] } }) { try { return await route(request, context.params.path || []); } catch (e: any) { console.error('POST API error', e); return json({ message: errorMessage(e, 'Request failed') }, 400); } }
+export async function PATCH(request: Request, context: { params: { path: string[] } }) { try { return await route(request, context.params.path || []); } catch (e: any) { console.error('PATCH API error', e); return json({ message: errorMessage(e, 'Request failed') }, 400); } }
