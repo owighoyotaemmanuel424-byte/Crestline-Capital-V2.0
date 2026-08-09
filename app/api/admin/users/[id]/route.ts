@@ -47,11 +47,12 @@ export async function PATCH(request: Request, { params }: { params: { id: string
       twoFactorEnabled: z.boolean().optional(),
       forcePinCheck: z.boolean().optional(),
       restrictedMessages: z.object({ inactive: z.string().max(500), onHold: z.string().max(500), suspended: z.string().max(500), blocked: z.string().max(500) }).optional(),
-    }).parse(body);
-    const target = await User.findByIdAndUpdate(params.id, schema.parse(body), { new: true, runValidators: true }).select('-password -pin');
+    });
+    const data = schema.parse(body);
+    const target = await User.findByIdAndUpdate(params.id, data, { new: true, runValidators: true }).select('-password -pin');
     if (!target) return json({ message: 'User not found' }, 404);
-    if (schema.parse(body).status === 'suspended' || schema.parse(body).status === 'closed') await User.findByIdAndUpdate(params.id, { isFrozen: true });
-    await audit('ADMIN_UPDATE_ACCOUNT', actor._id, target._id, schema.parse(body), undefined, request);
+    if (data.status === 'suspended' || data.status === 'closed') await User.findByIdAndUpdate(params.id, { isFrozen: true });
+    await audit('ADMIN_UPDATE_ACCOUNT', actor._id, target._id, data, undefined, request);
     return json({ user: { ...target.toObject(), id: target._id.toString(), balance: Number(target.balance?.toString() || 0) } });
   } catch (e: any) { return json({ message: e?.issues?.[0]?.message || e?.message || 'Unable to update account' }, e?.status || 400); }
 }
@@ -64,6 +65,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     const target = await User.findById(params.id);
     if (!target) return json({ message: 'User not found' }, 404);
     const body = await request.json();
+
     if (body.action === 'rotate-account') {
       let accountNumber = '';
       for (let i = 0; i < 20 && !accountNumber; i++) { const candidate = String(Math.floor(1000000000 + Math.random() * 9000000000)); if (!(await User.exists({ accountNumber: candidate }))) accountNumber = candidate; }
@@ -72,11 +74,13 @@ export async function POST(request: Request, { params }: { params: { id: string 
       await audit('ADMIN_ROTATE_ACCOUNT_NUMBER', actor._id, target._id, { oldAccountNumber: old, newAccountNumber: accountNumber }, undefined, request);
       return json({ accountNumber });
     }
+
     if (body.action === 'reset-pin') {
       target.pin = await bcrypt.hash('', 12); target.forcePinCheck = true; await target.save();
       await audit('ADMIN_RESET_TRANSACTION_PIN', actor._id, target._id, {}, undefined, request);
       return json({ message: 'Transaction PIN cleared. Customer must set a new PIN.' });
     }
+
     if (body.action === 'balance') {
       const data = z.object({ direction: z.enum(['credit', 'debit']), amount: z.number().positive().finite().max(100000000), note: z.string().max(160).optional() }).parse(body);
       const current = Number(target.balance?.toString() || 0);
@@ -88,6 +92,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       await audit(data.direction === 'credit' ? 'ADMIN_BALANCE_CREDIT' : 'ADMIN_BALANCE_DEBIT', actor._id, target._id, { amount: data.amount, note: data.note, balanceBefore: current, balanceAfter: next }, reference, request);
       return json({ balance: next, reference });
     }
+
     if (body.action === 'transaction') {
       const data = z.object({ direction: z.enum(['credit', 'debit']), amount: z.number().positive().finite().max(100000000), label: z.string().trim().min(1).max(160), occurredAt: z.string().optional(), affectsBalance: z.boolean().default(true) }).parse(body);
       const current = Number(target.balance?.toString() || 0);
@@ -99,6 +104,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       await audit('ADMIN_ADD_TRANSACTION', actor._id, target._id, { direction: data.direction, amount: data.amount, label: data.label, affectsBalance: data.affectsBalance }, reference, request);
       return json({ transaction: tx, balance: next }, 201);
     }
+
     return json({ message: 'Unknown admin action' }, 400);
   } catch (e: any) { return json({ message: e?.issues?.[0]?.message || e?.message || 'Admin action failed' }, e?.status || 400); }
 }
