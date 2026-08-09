@@ -1,14 +1,14 @@
 "use client";
 
 import { useRouter } from 'next/navigation';
-import { useAuthStore } from '@/store/auth';
+import { useAuth } from '@/store/auth';
 
 export default function Navbar() {
   const router = useRouter();
-  const { user, logout } = useAuthStore();
+  const { user, clear } = useAuth();
 
   function signOut() {
-    logout();
+    clear();
     router.push('/login');
   }
 
