@@ -3,71 +3,68 @@
 @tailwind utilities;
 
 /* Admin console visual system based on the supplied mobile reference video. */
-body:has(#crestline-admin-marker) {
-  background: #0b111d;
-}
-body:has(#crestline-admin-marker) .bank-shell {
-  background: #0b111d !important;
-  color: #f7f9fc !important;
-}
-body:has(#crestline-admin-marker) .app-sidebar {
-  background: #0f1724 !important;
-  border-color: #1f2b3b !important;
-  color: #f7f9fc;
-}
-body:has(#crestline-admin-marker) .app-brand { color: #f8fafc !important; }
-body:has(#crestline-admin-marker) .app-brand em { color: #8d99ab !important; }
+body:has(#crestline-admin-marker) { background:#0b111d; }
+body:has(#crestline-admin-marker) .bank-shell { background:#0b111d!important; color:#f7f9fc!important; }
+body:has(#crestline-admin-marker) .app-sidebar { background:#0f1724!important; border-color:#1f2b3b!important; color:#f7f9fc; }
+body:has(#crestline-admin-marker) .app-brand { color:#f8fafc!important; }
+body:has(#crestline-admin-marker) .app-brand em { color:#8d99ab!important; }
 body:has(#crestline-admin-marker) .app-brand-mark,
 body:has(#crestline-admin-marker) .app-mobile-brand span,
-body:has(#crestline-admin-marker) .app-mobile-user { background: #1596d1 !important; }
-body:has(#crestline-admin-marker) .app-profile { background: #151f2e !important; }
-body:has(#crestline-admin-marker) .app-profile b { color: #f1f5f9; }
-body:has(#crestline-admin-marker) .app-profile small { color: #78879a; }
-body:has(#crestline-admin-marker) .app-avatar { background: #172c43 !important; color: #6fc3ef !important; }
-body:has(#crestline-admin-marker) .app-nav-title { color: #657287 !important; }
-body:has(#crestline-admin-marker) .app-nav a { color: #aab4c2 !important; }
+body:has(#crestline-admin-marker) .app-mobile-user { background:#1596d1!important; }
+body:has(#crestline-admin-marker) .app-profile { background:#151f2e!important; }
+body:has(#crestline-admin-marker) .app-profile b { color:#f1f5f9; }
+body:has(#crestline-admin-marker) .app-profile small { color:#78879a; }
+body:has(#crestline-admin-marker) .app-avatar { background:#172c43!important; color:#6fc3ef!important; }
+body:has(#crestline-admin-marker) .app-nav-title { color:#657287!important; }
+body:has(#crestline-admin-marker) .app-nav a { color:#aab4c2!important; }
 body:has(#crestline-admin-marker) .app-nav a:hover,
-body:has(#crestline-admin-marker) .app-nav a.active { background: #182333 !important; color: #f3f7fb !important; }
-body:has(#crestline-admin-marker) .app-nav a.active { box-shadow: inset 2px 0 0 #1aa7e6; }
-body:has(#crestline-admin-marker) .app-admin-link { background: #171f2d !important; color: #aeb8c6 !important; }
-body:has(#crestline-admin-marker) .app-protected { border-color: #253244 !important; background: #121b29 !important; }
-body:has(#crestline-admin-marker) .app-protected b { color: #dbe4ee; }
-body:has(#crestline-admin-marker) .app-protected small { color: #718096; }
-body:has(#crestline-admin-marker) .app-signout { background: #171f2d !important; color: #ff7c86 !important; }
-body:has(#crestline-admin-marker) .app-shell-content { background: #0b111d; }
-body:has(#crestline-admin-marker) .app-mobile-top { background: rgba(11,17,29,.96) !important; border-color: #1f2b3b !important; color: #f8fafc; }
+body:has(#crestline-admin-marker) .app-nav a.active { background:#182333!important; color:#f3f7fb!important; }
+body:has(#crestline-admin-marker) .app-nav a.active { box-shadow:inset 2px 0 0 #1aa7e6; }
+body:has(#crestline-admin-marker) .app-admin-link { background:#171f2d!important; color:#aeb8c6!important; }
+body:has(#crestline-admin-marker) .app-protected { border-color:#253244!important; background:#121b29!important; }
+body:has(#crestline-admin-marker) .app-protected b { color:#dbe4ee; }
+body:has(#crestline-admin-marker) .app-protected small { color:#718096; }
+body:has(#crestline-admin-marker) .app-signout { background:#171f2d!important; color:#ff7c86!important; }
+body:has(#crestline-admin-marker) .app-shell-content { background:#0b111d; }
+body:has(#crestline-admin-marker) .app-mobile-top { background:rgba(11,17,29,.96)!important; border-color:#1f2b3b!important; color:#f8fafc; }
 body:has(#crestline-admin-marker) .app-menu-btn,
-body:has(#crestline-admin-marker) .app-mobile-close { background: #151f2e !important; color: #d9e2ed !important; }
-body:has(#crestline-admin-marker) .app-mobile-brand { color: #f8fafc; }
-body:has(#crestline-admin-marker) .app-backdrop { background: rgba(2,6,14,.68) !important; }
+body:has(#crestline-admin-marker) .app-mobile-close { background:#151f2e!important; color:#d9e2ed!important; }
+body:has(#crestline-admin-marker) .app-mobile-brand { color:#f8fafc; }
+body:has(#crestline-admin-marker) .app-backdrop { background:rgba(2,6,14,.68)!important; }
+
+/* Fixed language control mirrors the reference UI on mobile and desktop. */
+.admin-locale { position:fixed; left:26px; bottom:24px; z-index:140; display:flex; align-items:center; gap:8px; padding:8px 11px; border-radius:8px; background:#fff; color:#1b2635; box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:13px; font-weight:700; }
+.admin-locale span { font-size:20px; line-height:1; }
+.admin-locale select { border:0; outline:0; background:transparent; color:#1b2635; font-weight:700; cursor:pointer; }
 
 /* Re-skin existing admin content without changing customer-facing banking pages. */
-body:has(#crestline-admin-marker) .bg-slate-50 { background-color: #0b111d !important; }
-body:has(#crestline-admin-marker) .bg-white { background-color: #121b29 !important; }
-body:has(#crestline-admin-marker) .bg-slate-100 { background-color: #182333 !important; }
+body:has(#crestline-admin-marker) .bg-slate-50 { background-color:#0b111d!important; }
+body:has(#crestline-admin-marker) .bg-white { background-color:#121b29!important; }
+body:has(#crestline-admin-marker) .bg-slate-100 { background-color:#182333!important; }
 body:has(#crestline-admin-marker) .border-slate-200,
-body:has(#crestline-admin-marker) .border-slate-100 { border-color: #263449 !important; }
+body:has(#crestline-admin-marker) .border-slate-100 { border-color:#263449!important; }
 body:has(#crestline-admin-marker) .text-slate-950,
 body:has(#crestline-admin-marker) .text-slate-900,
-body:has(#crestline-admin-marker) .text-slate-800 { color: #f4f7fb !important; }
-body:has(#crestline-admin-marker) .text-slate-700 { color: #d3dbe6 !important; }
+body:has(#crestline-admin-marker) .text-slate-800 { color:#f4f7fb!important; }
+body:has(#crestline-admin-marker) .text-slate-700 { color:#d3dbe6!important; }
 body:has(#crestline-admin-marker) .text-slate-600,
-body:has(#crestline-admin-marker) .text-slate-500 { color: #8794a7 !important; }
-body:has(#crestline-admin-marker) .text-slate-400 { color: #647286 !important; }
+body:has(#crestline-admin-marker) .text-slate-500 { color:#8794a7!important; }
+body:has(#crestline-admin-marker) .text-slate-400 { color:#647286!important; }
 body:has(#crestline-admin-marker) input,
 body:has(#crestline-admin-marker) select,
-body:has(#crestline-admin-marker) textarea { background-color: #0f1724 !important; color: #e8edf4 !important; border-color: #2a374b !important; }
+body:has(#crestline-admin-marker) textarea { background-color:#0f1724!important; color:#e8edf4!important; border-color:#2a374b!important; }
 body:has(#crestline-admin-marker) input::placeholder,
-body:has(#crestline-admin-marker) textarea::placeholder { color: #6f7c90 !important; }
-body:has(#crestline-admin-marker) table thead { background: #151f2e !important; }
-body:has(#crestline-admin-marker) table tbody tr:hover { background: #172231 !important; }
-body:has(#crestline-admin-marker) .shadow-sm { box-shadow: 0 12px 30px rgba(0,0,0,.18) !important; }
-body:has(#crestline-admin-marker) .bg-emerald-50 { background: rgba(16,185,129,.12) !important; }
-body:has(#crestline-admin-marker) .bg-red-50 { background: rgba(239,68,68,.12) !important; }
-body:has(#crestline-admin-marker) .bg-amber-50 { background: rgba(245,158,11,.12) !important; }
-body:has(#crestline-admin-marker) .bg-blue-700 { background: #1596d1 !important; }
-body:has(#crestline-admin-marker) .hover\\:bg-slate-50:hover { background: #172231 !important; }
+body:has(#crestline-admin-marker) textarea::placeholder { color:#6f7c90!important; }
+body:has(#crestline-admin-marker) table thead { background:#151f2e!important; }
+body:has(#crestline-admin-marker) table tbody tr:hover { background:#172231!important; }
+body:has(#crestline-admin-marker) .shadow-sm { box-shadow:0 12px 30px rgba(0,0,0,.18)!important; }
+body:has(#crestline-admin-marker) .bg-emerald-50 { background:rgba(16,185,129,.12)!important; }
+body:has(#crestline-admin-marker) .bg-red-50 { background:rgba(239,68,68,.12)!important; }
+body:has(#crestline-admin-marker) .bg-amber-50 { background:rgba(245,158,11,.12)!important; }
+body:has(#crestline-admin-marker) .bg-blue-700 { background:#1596d1!important; }
+body:has(#crestline-admin-marker) .hover\\:bg-slate-50:hover { background:#172231!important; }
 
-@media (max-width: 850px) {
-  body:has(#crestline-admin-marker) .app-sidebar { width: 300px; }
+@media(max-width:850px){
+  body:has(#crestline-admin-marker) .app-sidebar { width:300px; }
+  .admin-locale { left:25px; bottom:82px; }
 }
