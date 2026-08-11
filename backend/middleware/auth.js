@@ -11,7 +11,7 @@ async function auth(req, res, next) {
     if (user.isFrozen) return res.status(403).json({ message: 'Account is frozen' });
     req.user = user;
     next();
-  } catch (error) {
+  } catch (_error) {
     return res.status(401).json({ message: 'Invalid or expired session' });
   }
 }
