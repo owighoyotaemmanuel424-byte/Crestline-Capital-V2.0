@@ -2,6 +2,7 @@ import mongoose, { Schema, model, models } from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import process from 'node:process';
 
 export async function connectMongo() {
   const uri = process.env.MONGODB_URI;
@@ -65,6 +66,6 @@ export function signToken(user: UserDoc) { const secret = process.env.JWT_SECRET
 export async function authenticatedUser(request: Request): Promise<UserDoc> { const header = request.headers.get('authorization') || ''; const token = header.startsWith('Bearer ') ? header.slice(7) : ''; const secret = process.env.JWT_SECRET; if (!token || !secret) throw new Error('UNAUTHORIZED'); const payload = jwt.verify(token, secret) as { userId?: string }; if (!payload.userId) throw new Error('UNAUTHORIZED'); const user = await User.findById(payload.userId) as UserDoc | null; if (!user) throw new Error('UNAUTHORIZED'); return user; }
 export function feeFor(amount: number, type: 'internal' | 'external') { return type === 'internal' ? 0 : Math.min(25, Math.max(2.5, amount * 0.005)); }
 export function makeReference() { return `CRL-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`; }
-export function validIdempotencyKey(value: string | null) { return Boolean(value && /^[A-Za-z0-9._:-]{16,128}$/.test(value)); }
+export function validIdempotencyKey(value: string | null) { return Boolean(value && /^[A-Za-z0-9.\-_]{16,128}$/.test(value)); }
 export async function audit(action: string, actorId: mongoose.Types.ObjectId, targetId?: mongoose.Types.ObjectId, metadata?: Record<string, unknown>, reference?: string, request?: Request) { await AuditLog.create({ actorId, action, targetId, metadata, reference, ip: request?.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || '', userAgent: request?.headers.get('user-agent') || '' }); }
 export { bcrypt, mongoose };
