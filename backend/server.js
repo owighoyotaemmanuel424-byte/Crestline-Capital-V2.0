@@ -11,6 +11,7 @@ const User = require('./models/User');
 const Transaction = require('./models/Transaction');
 const AuditLog = require('./models/AuditLog');
 const TransferRequest = require('./models/TransferRequest');
+const WithdrawalRequest = require('./models/WithdrawalRequest');
 const { auth, admin } = require('./middleware/auth');
 
 const app = express();
@@ -20,14 +21,17 @@ app.use((_, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); 
 app.use(express.json({ limit: '100kb' }));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 const transferLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many transfer attempts. Please try again later.' } });
+const withdrawalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many withdrawal attempts. Please try again later.' } });
 
 const registerSchema = z.object({ name: z.string().min(2).max(80), email: z.string().email(), password: z.string().min(8).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
 const transferSchema = z.object({ recipientAccountNumber: z.string().regex(/^\d{10,20}$/), amount: z.number().positive().finite().max(1000000), type: z.enum(['internal', 'external']), description: z.string().max(160).optional(), pin: z.string().regex(/^\d{4,6}$/) });
+const withdrawalSchema = z.object({ amount: z.number().positive().finite().max(1000000), pin: z.string().regex(/^\d{4,6}$/), destination: z.object({ type: z.literal('bank'), accountName: z.string().trim().min(2).max(120), accountNumber: z.string().trim().regex(/^\d{6,34}$/), bankCode: z.string().trim().min(2).max(20) }) });
 const feeFor = (amount, type) => type === 'internal' ? new Decimal(0) : Decimal.min(25, Decimal.max(2.5, amount.mul('0.005')));
+const withdrawalFeeFor = amount => Decimal.min(1000, Decimal.max(50, amount.mul('0.01')));
 const publicUser = u => ({ id: u._id, name: u.name, email: u.email, accountNumber: u.accountNumber, balance: Number(u.balance.toString()), isAdmin: u.isAdmin, isFrozen: u.isFrozen });
 const tokenFor = u => jwt.sign({ userId: u._id.toString() }, process.env.JWT_SECRET, { expiresIn: '1d' });
-const reference = () => `CRL-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+const reference = prefix => `${prefix}-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 const idempotencyKey = value => typeof value === 'string' && /^[A-Za-z0-9._:-]{16,128}$/.test(value) ? value : null;
 const audit = (req, action, targetId, metadata = {}, referenceValue) => AuditLog.create({ actorId: req.user._id, action, targetId, metadata, reference: referenceValue, ip: req.ip, userAgent: req.get('user-agent') || '' });
 
@@ -81,7 +85,6 @@ app.post('/api/transfer', auth, transferLimiter, async (req, res) => {
     const daily = await Transaction.aggregate([{ $match: { senderId: req.user._id, createdAt: { $gte: todayStart }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDecimal: '$amount' } }, fees: { $sum: { $toDecimal: '$fee' } } } }]);
     const dailyTotal = new Decimal(daily[0]?.total?.toString() || '0');
     if (dailyTotal.plus(amount).gt(100000)) return res.status(400).json({ message: 'Daily transfer limit exceeded' });
-
     let responsePayload;
     await session.withTransaction(async () => {
       const existing = await TransferRequest.findOne({ userId: req.user._id, key }).session(session);
@@ -97,9 +100,8 @@ app.post('/api/transfer', auth, transferLimiter, async (req, res) => {
       if (senderBalance.lt(total)) throw Object.assign(new Error('Insufficient balance'), { code: 'INSUFFICIENT' });
       sender.balance = mongoose.Types.Decimal128.fromString(senderBalance.minus(total).toFixed(2));
       receiver.balance = mongoose.Types.Decimal128.fromString(receiverBalance.plus(amount).toFixed(2));
-      await sender.save({ session });
-      await receiver.save({ session });
-      const [created] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference: reference() }], { session });
+      await sender.save({ session }); await receiver.save({ session });
+      const [created] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference: reference('CRL') }], { session });
       responsePayload = { message: 'Transfer completed successfully', reference: created.reference, amount: amount.toNumber(), fee: fee.toNumber(), total: total.toNumber() };
       await TransferRequest.updateOne({ userId: req.user._id, key }, { $set: { statusCode: 201, response: responsePayload } }, { session });
       await AuditLog.create([{ actorId: req.user._id, action: 'TRANSFER_COMPLETED', targetId: receiver._id, reference: created.reference, metadata: { amount: amount.toNumber(), fee: fee.toNumber(), type: data.type }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
@@ -107,13 +109,49 @@ app.post('/api/transfer', auth, transferLimiter, async (req, res) => {
     if (!responsePayload) throw new Error('Transfer response unavailable');
     res.status(responsePayload.statusCode || 201).json(responsePayload);
   } catch (e) {
-    if (e?.code === 11000) {
-      const existing = await TransferRequest.findOne({ userId: req.user._id, key });
-      if (existing) return res.status(existing.statusCode === 102 ? 409 : existing.statusCode).json(existing.response);
-    }
+    if (e?.code === 11000) { const existing = await TransferRequest.findOne({ userId: req.user._id, key }); if (existing) return res.status(existing.statusCode === 102 ? 409 : existing.statusCode).json(existing.response); }
     const map = { INSUFFICIENT: 400, NOT_FOUND: 404, RECIPIENT_FROZEN: 403, SENDER_FROZEN: 403 };
     res.status(map[e.code] || (e.issues ? 400 : 500)).json({ message: e.issues?.[0]?.message || e.message || 'Transfer failed' });
   } finally { await session.endSession(); }
+});
+
+app.post('/api/withdrawals', auth, withdrawalLimiter, async (req, res) => {
+  const key = idempotencyKey(req.get('Idempotency-Key'));
+  if (!key) return res.status(400).json({ message: 'A valid Idempotency-Key header is required for withdrawals' });
+  const session = await mongoose.startSession();
+  try {
+    const data = withdrawalSchema.parse(req.body);
+    if (!(await bcrypt.compare(data.pin, req.user.pin))) return res.status(401).json({ message: 'Incorrect withdrawal PIN' });
+    let responsePayload;
+    await session.withTransaction(async () => {
+      const existing = await WithdrawalRequest.findOne({ userId: req.user._id, idempotencyKey: key }).session(session);
+      if (existing) { responsePayload = { message: 'Withdrawal request already exists', reference: existing.reference, status: existing.status }; return; }
+      const user = await User.findById(req.user._id).session(session);
+      if (!user || user.isFrozen) throw Object.assign(new Error('Account is frozen or unavailable'), { code: 'FROZEN' });
+      const amount = new Decimal(String(data.amount));
+      const fee = withdrawalFeeFor(amount);
+      const total = amount.plus(fee);
+      const balance = new Decimal(user.balance.toString());
+      if (balance.lt(total)) throw Object.assign(new Error('Insufficient balance'), { code: 'INSUFFICIENT' });
+      user.balance = mongoose.Types.Decimal128.fromString(balance.minus(total).toFixed(2));
+      await user.save({ session });
+      const withdrawalReference = reference('WD');
+      await WithdrawalRequest.create([{ userId: user._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), netAmount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), destination: data.destination, status: 'pending', reference: withdrawalReference, idempotencyKey: key }], { session });
+      const [transaction] = await Transaction.create([{ senderId: user._id, receiverId: user._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: 'external', description: 'Withdrawal request', status: 'pending', reference: withdrawalReference }], { session });
+      responsePayload = { message: 'Withdrawal request submitted', reference: transaction.reference, amount: amount.toNumber(), fee: fee.toNumber(), total: total.toNumber(), status: 'pending' };
+      await AuditLog.create([{ actorId: user._id, action: 'WITHDRAWAL_REQUESTED', targetId: user._id, reference: withdrawalReference, metadata: { amount: amount.toNumber(), fee: fee.toNumber(), destinationType: data.destination.type }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
+    });
+    res.status(201).json(responsePayload);
+  } catch (e) {
+    if (e?.code === 11000) { const existing = await WithdrawalRequest.findOne({ userId: req.user._id, idempotencyKey: key }); if (existing) return res.status(200).json({ message: 'Withdrawal request already exists', reference: existing.reference, status: existing.status }); }
+    const map = { INSUFFICIENT: 400, FROZEN: 403 };
+    res.status(map[e.code] || (e.issues ? 400 : 500)).json({ message: e.issues?.[0]?.message || e.message || 'Withdrawal failed' });
+  } finally { await session.endSession(); }
+});
+
+app.get('/api/withdrawals', auth, async (req, res) => {
+  const docs = await WithdrawalRequest.find({ userId: req.user._id }).sort({ createdAt: -1 }).limit(100).select('-destination.accountNumber');
+  res.json({ withdrawals: docs });
 });
 
 app.get('/api/transactions', auth, async (req, res) => {
@@ -125,8 +163,8 @@ app.get('/api/admin/users', auth, admin, async (_, res) => res.json({ users: (aw
 app.get('/api/admin/transactions', auth, admin, async (_, res) => res.json({ transactions: await Transaction.find().sort({ createdAt: -1 }).limit(500) }));
 app.patch('/api/admin/users/:id/freeze', auth, admin, async (req, res) => { const user = await User.findByIdAndUpdate(req.params.id, { isFrozen: Boolean(req.body.frozen) }, { new: true }); if (!user) return res.status(404).json({ message: 'User not found' }); await audit(req, user.isFrozen ? 'ADMIN_FREEZE_ACCOUNT' : 'ADMIN_UNFREEZE_ACCOUNT', user._id); res.json({ user: publicUser(user) }); });
 app.get('/api/admin/audit-logs', auth, admin, async (_, res) => res.json({ logs: await AuditLog.find().sort({ createdAt: -1 }).limit(500).populate('actorId', 'name email') }));
+app.get('/api/admin/withdrawals', auth, admin, async (_, res) => res.json({ withdrawals: await WithdrawalRequest.find().sort({ createdAt: -1 }).limit(500) }));
 
-// Keep local development working while also allowing Vercel to import the Express app.
 if (require.main === module) {
   const port = process.env.PORT || 4000;
   mongoose.connect(process.env.MONGODB_URI).then(() => app.listen(port, () => console.log(`Crestline API listening on ${port}`))).catch(err => { console.error('MongoDB connection failed', err); process.exit(1); });
