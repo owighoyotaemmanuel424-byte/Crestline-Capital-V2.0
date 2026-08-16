@@ -12,17 +12,20 @@ const Transaction = require('./models/Transaction');
 const AuditLog = require('./models/AuditLog');
 const TransferRequest = require('./models/TransferRequest');
 const WithdrawalRequest = require('./models/WithdrawalRequest');
+const ProviderWebhookEvent = require('./models/ProviderWebhookEvent');
+const { createTransferRecipient, initiateTransfer } = require('./services/paystackTransfers');
 const { auth, admin } = require('./middleware/auth');
 
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 app.use((_, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Referrer-Policy', 'no-referrer'); next(); });
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '100kb', verify: (req, _, buf) => { req.rawBody = Buffer.from(buf); } }));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 const transferLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many transfer attempts. Please try again later.' } });
 const withdrawalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many withdrawal attempts. Please try again later.' } });
-const adminWithdrawalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many withdrawal review attempts. Please try again later.' } });
+const adminWithdrawalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: true, message: { message: 'Too many withdrawal review attempts. Please try again later.' } });
+const webhookLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
 
 const registerSchema = z.object({ name: z.string().min(2).max(80), email: z.string().email(), password: z.string().min(8).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
@@ -34,6 +37,7 @@ const withdrawalFeeFor = amount => Decimal.min(1000, Decimal.max(50, amount.mul(
 const publicUser = u => ({ id: u._id, name: u.name, email: u.email, accountNumber: u.accountNumber, balance: Number(u.balance.toString()), isAdmin: u.isAdmin, isFrozen: u.isFrozen });
 const tokenFor = u => jwt.sign({ userId: u._id.toString() }, process.env.JWT_SECRET, { expiresIn: '1d' });
 const reference = prefix => `${prefix}-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+const payoutReference = withdrawalReference => `crl_${withdrawalReference.toLowerCase().replace(/[^a-z0-9_-]/g, '_')}`.slice(0, 50);
 const idempotencyKey = value => typeof value === 'string' && /^[A-Za-z0-9._:-]{16,128}$/.test(value) ? value : null;
 const audit = (req, action, targetId, metadata = {}, referenceValue) => AuditLog.create({ actorId: req.user._id, action, targetId, metadata, reference: referenceValue, ip: req.ip, userAgent: req.get('user-agent') || '' });
 
@@ -184,8 +188,20 @@ app.patch('/api/admin/withdrawals/:reference/approve', auth, admin, adminWithdra
       transaction.status = 'success';
       await transaction.save({ session });
       await AuditLog.create([{ actorId: req.user._id, action: 'WITHDRAWAL_APPROVED', targetId: withdrawal.userId, reference: withdrawal.reference, metadata: { amount: withdrawal.amount.toString(), fee: withdrawal.fee.toString() }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
-      response = { message: 'Withdrawal approved for payout', reference: withdrawal.reference, status: withdrawal.status };
     });
+
+    const withdrawal = await WithdrawalRequest.findOne({ reference: req.params.reference });
+    try {
+      const recipient = await createTransferRecipient({ name: withdrawal.destination.accountName, accountNumber: withdrawal.destination.accountNumber, bankCode: withdrawal.destination.bankCode, currency: 'NGN' });
+      const transfer = await initiateTransfer({ amount: Math.round(Number(withdrawal.netAmount.toString()) * 100), recipientCode: recipient.recipient_code, reference: payoutReference(withdrawal.reference), reason: `Crestline withdrawal ${withdrawal.reference}`, currency: 'NGN' });
+      await WithdrawalRequest.updateOne({ _id: withdrawal._id, status: 'approved' }, { $set: { provider: 'paystack', providerReference: transfer.reference, providerTransferCode: transfer.transfer_code, providerStatus: transfer.status || 'pending', payoutInitiatedAt: new Date() } });
+      await AuditLog.create({ actorId: req.user._id, action: 'WITHDRAWAL_PAYOUT_INITIATED', targetId: withdrawal.userId, reference: withdrawal.reference, metadata: { provider: 'paystack', providerReference: transfer.reference, transferCode: transfer.transfer_code } , ip: req.ip, userAgent: req.get('user-agent') || '' });
+      response = { message: 'Withdrawal approved and payout initiated', reference: withdrawal.reference, status: 'approved', providerStatus: transfer.status || 'pending' };
+    } catch (providerError) {
+      await WithdrawalRequest.updateOne({ _id: withdrawal._id, status: 'approved' }, { $set: { provider: 'paystack', providerStatus: 'failed', providerError: String(providerError.message || providerError).slice(0, 1000) } });
+      await AuditLog.create({ actorId: req.user._id, action: 'WITHDRAWAL_PAYOUT_INITIATION_FAILED', targetId: withdrawal.userId, reference: withdrawal.reference, metadata: { error: String(providerError.message || providerError).slice(0, 500) }, ip: req.ip, userAgent: req.get('user-agent') || '' });
+      return res.status(502).json({ message: 'Withdrawal approved but payout could not be initiated; manual review required', reference: withdrawal.reference, status: 'approved' });
+    }
     res.json(response);
   } catch (e) {
     const map = { NOT_FOUND: 404, FINALIZED: 409, TX_STATE: 409 };
@@ -224,6 +240,71 @@ app.patch('/api/admin/withdrawals/:reference/reject', auth, admin, adminWithdraw
     const map = { NOT_FOUND: 404, FINALIZED: 409, USER_NOT_FOUND: 404, TX_STATE: 409 };
     res.status(map[e.code] || (e.issues ? 400 : 500)).json({ message: e.issues?.[0]?.message || e.message || 'Withdrawal rejection failed' });
   } finally { await session.endSession(); }
+});
+
+app.post('/api/paystack/webhook', webhookLimiter, async (req, res) => {
+  try {
+    const signature = req.get('x-paystack-signature');
+    const secret = process.env.PAYSTACK_SECRET_KEY;
+    if (!signature || !secret || !req.rawBody) return res.status(401).json({ message: 'Invalid webhook signature' });
+    const expected = crypto.createHmac('sha512', secret).update(req.rawBody).digest('hex');
+    const provided = String(signature).toLowerCase();
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    const providedBuffer = /^[a-f0-9]{128}$/i.test(provided) ? Buffer.from(provided, 'hex') : Buffer.alloc(0);
+    if (providedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) return res.status(401).json({ message: 'Invalid webhook signature' });
+
+    const event = req.body;
+    const eventId = event?.data?.id ? `paystack:${event.event}:${event.data.id}` : `paystack:${event.event}:${crypto.createHash('sha256').update(req.rawBody).digest('hex')}`;
+    const referenceValue = event?.data?.reference;
+    try {
+      await ProviderWebhookEvent.create({ provider: 'paystack', eventId, event: event.event || 'unknown', reference: referenceValue, status: 'received' });
+    } catch (e) {
+      if (e?.code === 11000) return res.status(200).json({ received: true, duplicate: true });
+      throw e;
+    }
+
+    const terminalFailure = event.event === 'transfer.failed' || event.event === 'transfer.reversed';
+    const success = event.event === 'transfer.success';
+    const withdrawal = referenceValue ? await WithdrawalRequest.findOne({ providerReference: referenceValue }) : null;
+    if (!withdrawal) {
+      await ProviderWebhookEvent.updateOne({ eventId }, { $set: { status: 'ignored', processedAt: new Date() } });
+      return res.status(200).json({ received: true });
+    }
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const current = await WithdrawalRequest.findById(withdrawal._id).session(session);
+        if (!current) return;
+        if (success && current.status === 'approved') {
+          current.status = 'paid';
+          current.providerStatus = 'success';
+          current.paidAt = new Date();
+          await current.save({ session });
+          await Transaction.updateOne({ reference: current.reference, status: 'success' }, { $set: { description: 'Withdrawal paid via Paystack' } }, { session });
+          await AuditLog.create([{ action: 'WITHDRAWAL_PAID', targetId: current.userId, reference: current.reference, metadata: { provider: 'paystack', providerReference: referenceValue, transferCode: event.data.transfer_code }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
+        } else if (terminalFailure && current.status === 'approved') {
+          const user = await User.findById(current.userId).session(session);
+          if (!user) throw new Error('Withdrawal owner not found');
+          const balance = new Decimal(user.balance.toString());
+          const refund = new Decimal(current.amount.toString()).plus(new Decimal(current.fee.toString()));
+          user.balance = mongoose.Types.Decimal128.fromString(balance.plus(refund).toFixed(2));
+          await user.save({ session });
+          current.status = 'rejected';
+          current.providerStatus = event.event === 'transfer.reversed' ? 'reversed' : 'failed';
+          current.providerError = String(event.data?.failures || event.data?.reason || event.event).slice(0, 1000);
+          await current.save({ session });
+          await Transaction.updateOne({ reference: current.reference, status: 'success' }, { $set: { status: 'failed', description: `Withdrawal payout ${event.event}; funds restored` } }, { session });
+          await AuditLog.create([{ action: 'WITHDRAWAL_PAYOUT_FAILED', targetId: current.userId, reference: current.reference, metadata: { provider: 'paystack', providerReference: referenceValue, event: event.event }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
+        }
+        await ProviderWebhookEvent.updateOne({ eventId }, { $set: { status: 'processed', processedAt: new Date() } }, { session });
+      });
+    } finally { await session.endSession(); }
+    return res.status(200).json({ received: true });
+  } catch (e) {
+    try { if (req.body?.data?.reference) await ProviderWebhookEvent.updateOne({ provider: 'paystack', reference: req.body.data.reference, status: 'received' }, { $set: { status: 'failed', error: String(e.message || e).slice(0, 1000) } }); } catch (_) {}
+    return res.status(500).json({ message: 'Webhook processing failed' });
+  }
 });
 
 if (require.main === module) {
