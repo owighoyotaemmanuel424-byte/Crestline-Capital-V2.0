@@ -22,11 +22,13 @@ app.use(express.json({ limit: '100kb' }));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 const transferLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many transfer attempts. Please try again later.' } });
 const withdrawalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many withdrawal attempts. Please try again later.' } });
+const adminWithdrawalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many withdrawal review attempts. Please try again later.' } });
 
 const registerSchema = z.object({ name: z.string().min(2).max(80), email: z.string().email(), password: z.string().min(8).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
 const transferSchema = z.object({ recipientAccountNumber: z.string().regex(/^\d{10,20}$/), amount: z.number().positive().finite().max(1000000), type: z.enum(['internal', 'external']), description: z.string().max(160).optional(), pin: z.string().regex(/^\d{4,6}$/) });
 const withdrawalSchema = z.object({ amount: z.number().positive().finite().max(1000000), pin: z.string().regex(/^\d{4,6}$/), destination: z.object({ type: z.literal('bank'), accountName: z.string().trim().min(2).max(120), accountNumber: z.string().trim().regex(/^\d{6,34}$/), bankCode: z.string().trim().min(2).max(20) }) });
+const rejectionSchema = z.object({ reason: z.string().trim().min(3).max(500) });
 const feeFor = (amount, type) => type === 'internal' ? new Decimal(0) : Decimal.min(25, Decimal.max(2.5, amount.mul('0.005')));
 const withdrawalFeeFor = amount => Decimal.min(1000, Decimal.max(50, amount.mul('0.01')));
 const publicUser = u => ({ id: u._id, name: u.name, email: u.email, accountNumber: u.accountNumber, balance: Number(u.balance.toString()), isAdmin: u.isAdmin, isFrozen: u.isFrozen });
@@ -137,8 +139,8 @@ app.post('/api/withdrawals', auth, withdrawalLimiter, async (req, res) => {
       await user.save({ session });
       const withdrawalReference = reference('WD');
       await WithdrawalRequest.create([{ userId: user._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), netAmount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), destination: data.destination, status: 'pending', reference: withdrawalReference, idempotencyKey: key }], { session });
-      const [transaction] = await Transaction.create([{ senderId: user._id, receiverId: user._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: 'external', description: 'Withdrawal request', status: 'pending', reference: withdrawalReference }], { session });
-      responsePayload = { message: 'Withdrawal request submitted', reference: transaction.reference, amount: amount.toNumber(), fee: fee.toNumber(), total: total.toNumber(), status: 'pending' };
+      await Transaction.create([{ senderId: user._id, receiverId: user._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: 'external', description: 'Withdrawal request', status: 'pending', reference: withdrawalReference }], { session });
+      responsePayload = { message: 'Withdrawal request submitted', reference: withdrawalReference, amount: amount.toNumber(), fee: fee.toNumber(), total: total.toNumber(), status: 'pending' };
       await AuditLog.create([{ actorId: user._id, action: 'WITHDRAWAL_REQUESTED', targetId: user._id, reference: withdrawalReference, metadata: { amount: amount.toNumber(), fee: fee.toNumber(), destinationType: data.destination.type }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
     });
     res.status(201).json(responsePayload);
@@ -164,6 +166,65 @@ app.get('/api/admin/transactions', auth, admin, async (_, res) => res.json({ tra
 app.patch('/api/admin/users/:id/freeze', auth, admin, async (req, res) => { const user = await User.findByIdAndUpdate(req.params.id, { isFrozen: Boolean(req.body.frozen) }, { new: true }); if (!user) return res.status(404).json({ message: 'User not found' }); await audit(req, user.isFrozen ? 'ADMIN_FREEZE_ACCOUNT' : 'ADMIN_UNFREEZE_ACCOUNT', user._id); res.json({ user: publicUser(user) }); });
 app.get('/api/admin/audit-logs', auth, admin, async (_, res) => res.json({ logs: await AuditLog.find().sort({ createdAt: -1 }).limit(500).populate('actorId', 'name email') }));
 app.get('/api/admin/withdrawals', auth, admin, async (_, res) => res.json({ withdrawals: await WithdrawalRequest.find().sort({ createdAt: -1 }).limit(500) }));
+
+app.patch('/api/admin/withdrawals/:reference/approve', auth, admin, adminWithdrawalLimiter, async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    let response;
+    await session.withTransaction(async () => {
+      const withdrawal = await WithdrawalRequest.findOne({ reference: req.params.reference }).session(session);
+      if (!withdrawal) throw Object.assign(new Error('Withdrawal request not found'), { code: 'NOT_FOUND' });
+      if (withdrawal.status !== 'pending') throw Object.assign(new Error(`Withdrawal is already ${withdrawal.status}`), { code: 'FINALIZED' });
+      const transaction = await Transaction.findOne({ reference: withdrawal.reference }).session(session);
+      if (!transaction || transaction.status !== 'pending') throw Object.assign(new Error('Withdrawal transaction is unavailable'), { code: 'TX_STATE' });
+      withdrawal.status = 'approved';
+      withdrawal.approvedBy = req.user._id;
+      withdrawal.approvedAt = new Date();
+      await withdrawal.save({ session });
+      transaction.status = 'success';
+      await transaction.save({ session });
+      await AuditLog.create([{ actorId: req.user._id, action: 'WITHDRAWAL_APPROVED', targetId: withdrawal.userId, reference: withdrawal.reference, metadata: { amount: withdrawal.amount.toString(), fee: withdrawal.fee.toString() }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
+      response = { message: 'Withdrawal approved for payout', reference: withdrawal.reference, status: withdrawal.status };
+    });
+    res.json(response);
+  } catch (e) {
+    const map = { NOT_FOUND: 404, FINALIZED: 409, TX_STATE: 409 };
+    res.status(map[e.code] || 500).json({ message: e.message || 'Withdrawal approval failed' });
+  } finally { await session.endSession(); }
+});
+
+app.patch('/api/admin/withdrawals/:reference/reject', auth, admin, adminWithdrawalLimiter, async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    const data = rejectionSchema.parse(req.body);
+    let response;
+    await session.withTransaction(async () => {
+      const withdrawal = await WithdrawalRequest.findOne({ reference: req.params.reference }).session(session);
+      if (!withdrawal) throw Object.assign(new Error('Withdrawal request not found'), { code: 'NOT_FOUND' });
+      if (withdrawal.status !== 'pending') throw Object.assign(new Error(`Withdrawal is already ${withdrawal.status}`), { code: 'FINALIZED' });
+      const user = await User.findById(withdrawal.userId).session(session);
+      if (!user) throw Object.assign(new Error('Withdrawal owner not found'), { code: 'USER_NOT_FOUND' });
+      const transaction = await Transaction.findOne({ reference: withdrawal.reference }).session(session);
+      if (!transaction || transaction.status !== 'pending') throw Object.assign(new Error('Withdrawal transaction is unavailable'), { code: 'TX_STATE' });
+      const balance = new Decimal(user.balance.toString());
+      const refund = new Decimal(withdrawal.amount.toString()).plus(new Decimal(withdrawal.fee.toString()));
+      user.balance = mongoose.Types.Decimal128.fromString(balance.plus(refund).toFixed(2));
+      await user.save({ session });
+      withdrawal.status = 'rejected';
+      withdrawal.rejectionReason = data.reason;
+      await withdrawal.save({ session });
+      transaction.status = 'failed';
+      transaction.description = `Withdrawal rejected: ${data.reason}`;
+      await transaction.save({ session });
+      await AuditLog.create([{ actorId: req.user._id, action: 'WITHDRAWAL_REJECTED', targetId: withdrawal.userId, reference: withdrawal.reference, metadata: { amount: withdrawal.amount.toString(), fee: withdrawal.fee.toString(), reason: data.reason }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
+      response = { message: 'Withdrawal rejected and funds restored', reference: withdrawal.reference, status: withdrawal.status };
+    });
+    res.json(response);
+  } catch (e) {
+    const map = { NOT_FOUND: 404, FINALIZED: 409, USER_NOT_FOUND: 404, TX_STATE: 409 };
+    res.status(map[e.code] || (e.issues ? 400 : 500)).json({ message: e.issues?.[0]?.message || e.message || 'Withdrawal rejection failed' });
+  } finally { await session.endSession(); }
+});
 
 if (require.main === module) {
   const port = process.env.PORT || 4000;
