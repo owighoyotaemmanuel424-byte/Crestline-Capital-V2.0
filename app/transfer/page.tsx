@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 type TransferType = "local" | "international" | "member";
 type FormData = { accountName: string; accountNumber: string; bankName: string; routingNumber: string; description: string; pin: string; saveBeneficiary: boolean };
 type Recipient = { name: string; accountNumber: string } | null;
-type NavItem = [string, string, React.ComponentType<{ size?: number }>];
+type NavItem = [string, string, React.ComponentType<{ size?: string | number }>];
 
 const nav: NavItem[] = [['Home','/dashboard',Home],['Transfer','/transfer',Send],['Deposit','/deposit',PlusCircle],['Activity','/transactions',TrendingUp],['Cards','/cards',CreditCard],['Settings','/account',Settings],['Support','/support',Headphones],['More','/dashboard',Grid]] as const;
 
@@ -113,9 +113,7 @@ export default function TransferPage(){
   return <div className={dark ? 'min-h-screen bg-slate-950 pb-28 text-white' : 'min-h-screen bg-slate-50 pb-28 text-slate-900'}>
     <header className="mx-auto flex max-w-5xl items-center justify-between px-4 pb-5 pt-5 sm:px-8"><a href="/dashboard" className="flex items-center gap-3"><span className="relative flex h-11 w-11 items-center justify-center rounded-full bg-sky-500 text-white"><span className="absolute bottom-2 h-0 w-0 border-l-[11px] border-r-[11px] border-b-[15px] border-l-transparent border-r-transparent border-b-white" /><span className="absolute bottom-2 h-0.5 w-6 rounded bg-white" /></span><span className="text-lg font-bold">Crestline Capital</span></a><div className="flex gap-2"><button aria-label="Toggle dark mode" onClick={() => setDark(x => !x)} className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-700"><Moon size={18}/></button><button aria-label="Notifications" className="relative flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-700"><Bell size={18}/><span className="absolute -right-1 -top-1 rounded-full bg-slate-900 px-1.5 py-0.5 text-[9px] text-white">1</span></button></div></header>
     <main className="mx-auto max-w-2xl px-4 sm:px-8"><div className="mb-5"><p className="text-xs font-semibold tracking-[.14em] text-sky-500">MONEY MOVEMENT</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">Transfer Money</h1><p className={dark ? 'mt-1 text-sm text-slate-400' : 'mt-1 text-sm text-slate-500'}>Send money securely from your Crestline account.</p></div>
-     <div className="mb-5 flex gap-1 overflow-x-auto rounded-2xl bg-slate-100 p-1">{
-       ([['local','Local'],['international','International'],['member','To a Member']] as const).map(([v,l]) => <button key={v} onClick={() => setTransferType(v)} className={`min-w-[110px] flex-1 rounded-xl px-3 py-3 text-xs font-medium transition sm:text-sm ${transferType === v ? 'bg-sky-500 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}>{l}</button>)
-     }</div>
+     <div className="mb-5 flex gap-1 overflow-x-auto rounded-2xl bg-slate-100 p-1">{([['local','Local'],['international','International'],['member','To a Member']] as const).map(([v,l]) => <button key={v} onClick={() => setTransferType(v)} className={`min-w-[110px] flex-1 rounded-xl px-3 py-3 text-xs font-medium transition sm:text-sm ${transferType === v ? 'bg-sky-500 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}>{l}</button>)}</div>
      {success && <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">✓ {success}</div>}
      {error && <div className="mb-4 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
     <form onSubmit={review} className="space-y-4">
@@ -124,11 +122,7 @@ export default function TransferPage(){
         <Field label="Description / Payment Reference" placeholder="Reference note" value={formData.description} onChange={v => set('description', v)}/>
         <Field label="Transaction PIN" placeholder="Enter your PIN" value={formData.pin} onChange={v => set('pin', v.replace(/\D/g, ''))} type="password"/>
         <label className="flex items-center gap-3 text-sm text-slate-600"><input type="checkbox" checked={formData.saveBeneficiary} onChange={e => set('saveBeneficiary', e.target.checked)} className="h-4 w-4 accent-sky-500"/>Save as beneficiary</label>
-        <div className="rounded-2xl bg-slate-50 p-4">
-          <div className="flex justify-between text-sm text-slate-500"><span>Transfer</span><span>${value.toFixed(2)}</span></div>
-          <div className="mt-2 flex justify-between text-sm text-slate-500"><span>Fee</span><span>${fee.toFixed(2)}</span></div>
-          <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 font-bold"><span>Total deduction</span><span>${total.toFixed(2)}</span></div>
-        </div>
+        <div className="rounded-2xl bg-slate-50 p-4"><div className="flex justify-between text-sm text-slate-500"><span>Transfer</span><span>${value.toFixed(2)}</span></div><div className="mt-2 flex justify-between text-sm text-slate-500"><span>Fee</span><span>${fee.toFixed(2)}</span></div><div className="mt-3 flex justify-between border-t border-slate-200 pt-3 font-bold"><span>Total deduction</span><span>${total.toFixed(2)}</span></div></div>
         <button type="submit" className="w-full rounded-2xl bg-sky-500 py-3.5 font-semibold text-white transition hover:bg-sky-600 active:scale-[.99]">Continue</button>
       </section>
      </form>
