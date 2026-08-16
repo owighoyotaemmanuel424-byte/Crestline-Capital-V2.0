@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const Decimal = require('decimal.js');
 const rateLimit = require('express-rate-limit');
 const { z } = require('zod');
 const User = require('./models/User');
@@ -23,7 +24,7 @@ const transferLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standar
 const registerSchema = z.object({ name: z.string().min(2).max(80), email: z.string().email(), password: z.string().min(8).max(128), pin: z.string().regex(/^\d{4,6}$/) });
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
 const transferSchema = z.object({ recipientAccountNumber: z.string().regex(/^\d{10,20}$/), amount: z.number().positive().finite().max(1000000), type: z.enum(['internal', 'external']), description: z.string().max(160).optional(), pin: z.string().regex(/^\d{4,6}$/) });
-const feeFor = (amount, type) => type === 'internal' ? 0 : Math.min(25, Math.max(2.5, amount * 0.005));
+const feeFor = (amount, type) => type === 'internal' ? new Decimal(0) : Decimal.min(25, Decimal.max(2.5, amount.mul('0.005')));
 const publicUser = u => ({ id: u._id, name: u.name, email: u.email, accountNumber: u.accountNumber, balance: Number(u.balance.toString()), isAdmin: u.isAdmin, isFrozen: u.isFrozen });
 const tokenFor = u => jwt.sign({ userId: u._id.toString() }, process.env.JWT_SECRET, { expiresIn: '1d' });
 const reference = () => `CRL-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -71,13 +72,15 @@ app.post('/api/transfer', auth, transferLimiter, async (req, res) => {
   const session = await mongoose.startSession();
   try {
     const data = transferSchema.parse(req.body);
+    const amount = new Decimal(String(data.amount));
     if (data.recipientAccountNumber === req.user.accountNumber) return res.status(400).json({ message: 'You cannot transfer to yourself' });
     if (!(await bcrypt.compare(data.pin, req.user.pin))) return res.status(401).json({ message: 'Incorrect transfer PIN' });
-    const fee = feeFor(data.amount, data.type);
-    const total = data.amount + fee;
+    const fee = feeFor(amount, data.type);
+    const total = amount.plus(fee);
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const daily = await Transaction.aggregate([{ $match: { senderId: req.user._id, createdAt: { $gte: todayStart }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDouble: '$amount' } }, fees: { $sum: { $toDouble: '$fee' } } } }]);
-    if ((daily[0]?.total || 0) + data.amount > 100000) return res.status(400).json({ message: 'Daily transfer limit exceeded' });
+    const daily = await Transaction.aggregate([{ $match: { senderId: req.user._id, createdAt: { $gte: todayStart }, status: 'success' } }, { $group: { _id: null, total: { $sum: { $toDecimal: '$amount' } }, fees: { $sum: { $toDecimal: '$fee' } } } }]);
+    const dailyTotal = new Decimal(daily[0]?.total?.toString() || '0');
+    if (dailyTotal.plus(amount).gt(100000)) return res.status(400).json({ message: 'Daily transfer limit exceeded' });
 
     let responsePayload;
     await session.withTransaction(async () => {
@@ -89,16 +92,17 @@ app.post('/api/transfer', auth, transferLimiter, async (req, res) => {
       if (!sender || sender.isFrozen) throw Object.assign(new Error('Sender account is frozen or unavailable'), { code: 'SENDER_FROZEN' });
       if (!receiver) throw Object.assign(new Error('Recipient account not found'), { code: 'NOT_FOUND' });
       if (receiver.isFrozen) throw Object.assign(new Error('Recipient account is frozen'), { code: 'RECIPIENT_FROZEN' });
-      const balance = Number(sender.balance.toString());
-      if (balance < total) throw Object.assign(new Error('Insufficient balance'), { code: 'INSUFFICIENT' });
-      sender.balance = mongoose.Types.Decimal128.fromString((balance - total).toFixed(2));
-      receiver.balance = mongoose.Types.Decimal128.fromString((Number(receiver.balance.toString()) + data.amount).toFixed(2));
+      const senderBalance = new Decimal(sender.balance.toString());
+      const receiverBalance = new Decimal(receiver.balance.toString());
+      if (senderBalance.lt(total)) throw Object.assign(new Error('Insufficient balance'), { code: 'INSUFFICIENT' });
+      sender.balance = mongoose.Types.Decimal128.fromString(senderBalance.minus(total).toFixed(2));
+      receiver.balance = mongoose.Types.Decimal128.fromString(receiverBalance.plus(amount).toFixed(2));
       await sender.save({ session });
       await receiver.save({ session });
-      const [created] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(data.amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference: reference() }], { session });
-      responsePayload = { message: 'Transfer completed successfully', reference: created.reference, amount: data.amount, fee, total: Number(total.toFixed(2)) };
+      const [created] = await Transaction.create([{ senderId: sender._id, receiverId: receiver._id, amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)), fee: mongoose.Types.Decimal128.fromString(fee.toFixed(2)), type: data.type, description: data.description || '', status: 'success', reference: reference() }], { session });
+      responsePayload = { message: 'Transfer completed successfully', reference: created.reference, amount: amount.toNumber(), fee: fee.toNumber(), total: total.toNumber() };
       await TransferRequest.updateOne({ userId: req.user._id, key }, { $set: { statusCode: 201, response: responsePayload } }, { session });
-      await AuditLog.create([{ actorId: req.user._id, action: 'TRANSFER_COMPLETED', targetId: receiver._id, reference: created.reference, metadata: { amount: data.amount, fee, type: data.type }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
+      await AuditLog.create([{ actorId: req.user._id, action: 'TRANSFER_COMPLETED', targetId: receiver._id, reference: created.reference, metadata: { amount: amount.toNumber(), fee: fee.toNumber(), type: data.type }, ip: req.ip, userAgent: req.get('user-agent') || '' }], { session });
     });
     if (!responsePayload) throw new Error('Transfer response unavailable');
     res.status(responsePayload.statusCode || 201).json(responsePayload);
