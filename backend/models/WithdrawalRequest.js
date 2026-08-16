@@ -20,6 +20,12 @@ const WithdrawalRequestSchema = new mongoose.Schema({
   rejectionReason: { type: String, trim: true, maxlength: 500 },
   approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   approvedAt: { type: Date },
+  provider: { type: String, enum: ['paystack'], default: 'paystack' },
+  providerReference: { type: String, unique: true, sparse: true, index: true },
+  providerTransferCode: { type: String },
+  providerStatus: { type: String, enum: ['pending', 'success', 'failed', 'reversed', 'otp', 'blocked', 'abandoned'] },
+  providerError: { type: String, maxlength: 1000 },
+  payoutInitiatedAt: { type: Date },
   paidAt: { type: Date }
 }, { timestamps: true });
 
