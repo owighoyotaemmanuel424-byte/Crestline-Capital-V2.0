@@ -11,6 +11,7 @@ export default defineSchema({
     accountNumber: v.string(),
     role: v.union(v.literal("USER"), v.literal("ADMIN")),
     isFrozen: v.boolean(),
+    pinHash: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_authUserId", ["authUserId"])
