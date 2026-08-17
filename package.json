@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "@convex-dev/better-auth": "^0.10.0",
-    "@prisma/client": "5.22.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.45.4",
     "axios": "^1.7.9",
@@ -45,7 +44,6 @@
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
-    "prisma": "5.22.0",
     "tailwindcss": "^3.4.16",
     "typescript": "^5.7.2"
   }
