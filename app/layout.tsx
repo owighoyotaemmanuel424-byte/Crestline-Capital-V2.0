@@ -1,6 +1,7 @@
 import "./globals.css";
 import "./banking.css";
 import type { Metadata } from "next";
+import { ConvexClientProvider } from "./ConvexClientProvider";
 
 export const metadata: Metadata = {
   title: "Crestline Capital | Digital Banking",
@@ -8,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return <html lang="en"><body>{children}</body></html>;
+  return <html lang="en"><body><ConvexClientProvider>{children}</ConvexClientProvider></body></html>;
 }
