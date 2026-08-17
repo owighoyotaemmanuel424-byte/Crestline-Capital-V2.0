@@ -13,6 +13,12 @@ export const listMine = query({
     ]);
     const map = new Map<string, (typeof sent)[number]>();
     for (const transaction of [...sent, ...received]) map.set(transaction._id, transaction);
-    return [...map.values()].sort((a, b) => b.createdAt - a.createdAt);
+    const records = [...map.values()].sort((a, b) => b.createdAt - a.createdAt);
+    return Promise.all(records.map(async (t) => {
+      const otherAccountId = t.senderAccountId === account._id ? t.receiverAccountId : t.senderAccountId;
+      const otherAccount = otherAccountId ? await ctx.db.get(otherAccountId) : null;
+      const otherUser = otherAccount ? await ctx.db.get(otherAccount.userId) : null;
+      return { ...t, id: t._id, direction: t.senderAccountId === account._id ? "debit" : "credit", counterparty: otherUser?.name || "External bank" };
+    }));
   },
 });
