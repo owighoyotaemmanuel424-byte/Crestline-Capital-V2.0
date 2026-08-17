@@ -22,7 +22,7 @@
     "@supabase/supabase-js": "^2.45.4",
     "axios": "^1.7.9",
     "bcryptjs": "^2.4.3",
-    "better-auth": "~1.6.15",
+    "better-auth": "1.4.9",
     "clsx": "^2.1.1",
     "convex": "^1.25.0",
     "decimal.js": "^10.4.3",
