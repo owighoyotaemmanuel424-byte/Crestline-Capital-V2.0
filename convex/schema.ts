@@ -13,6 +13,8 @@ export default defineSchema({
 
   recipients: defineTable({ ownerId: v.id("users"), recipientUserId: v.id("users"), label: v.optional(v.string()), createdAt: v.number(), lastUsedAt: v.optional(v.number()) }).index("by_owner", ["ownerId"]).index("by_owner_recipient", ["ownerId", "recipientUserId"]),
 
+  cards: defineTable({ userId: v.id("users"), last4: v.string(), brand: v.union(v.literal("visa"), v.literal("mastercard")), type: v.union(v.literal("virtual"), v.literal("physical")), status: v.union(v.literal("pending"), v.literal("active"), v.literal("frozen"), v.literal("revoked")), spendingLimit: money, issuedAt: v.optional(v.number()), revokedAt: v.optional(v.number()), createdAt: v.number() }).index("by_user", ["userId"]).index("by_status", ["status"]),
+
   transactions: defineTable({
     legacyId: v.optional(v.string()), senderAccountId: v.optional(v.id("accounts")), receiverAccountId: v.optional(v.id("accounts")), type: v.string(), amount: money, fee: money,
     currency: v.string(), status: v.string(), description: v.string(), reference: v.string(), idempotencyKey: v.string(), deliveryStatus: v.optional(v.string()), createdAt: v.number(),
@@ -22,10 +24,7 @@ export default defineSchema({
 
   transferRequests: defineTable({ userId: v.id("users"), idempotencyKey: v.string(), transactionId: v.optional(v.id("transactions")), status: v.string(), response: v.optional(v.any()), createdAt: v.number() }).index("by_user_key", ["userId", "idempotencyKey"]),
 
-  withdrawalRequests: defineTable({
-    legacyId: v.optional(v.string()), userId: v.id("users"), accountId: v.id("accounts"), amount: money, fee: money, total: money,
-    destination: v.object({ type: v.literal("bank"), accountName: v.string(), accountNumber: v.string(), bankCode: v.string() }), status: v.string(), reference: v.string(), idempotencyKey: v.string(), notes: v.optional(v.string()), createdAt: v.number(), updatedAt: v.number(),
-  }).index("by_user", ["userId"]).index("by_idempotency", ["userId", "idempotencyKey"]).index("by_reference", ["reference"]).index("by_legacyId", ["legacyId"]),
+  withdrawalRequests: defineTable({ legacyId: v.optional(v.string()), userId: v.id("users"), accountId: v.id("accounts"), amount: money, fee: money, total: money, destination: v.object({ type: v.literal("bank"), accountName: v.string(), accountNumber: v.string(), bankCode: v.string() }), status: v.string(), reference: v.string(), idempotencyKey: v.string(), notes: v.optional(v.string()), createdAt: v.number(), updatedAt: v.number() }).index("by_user", ["userId"]).index("by_idempotency", ["userId", "idempotencyKey"]).index("by_reference", ["reference"]).index("by_legacyId", ["legacyId"]),
 
   auditLogs: defineTable({ actorId: v.optional(v.id("users")), action: v.string(), targetId: v.optional(v.string()), reference: v.optional(v.string()), metadata: v.optional(v.any()), createdAt: v.number() }).index("by_actor", ["actorId"]).index("by_action", ["action"]),
   notifications: defineTable({ userId: v.id("users"), type: v.string(), title: v.string(), body: v.string(), read: v.boolean(), transactionId: v.optional(v.id("transactions")), createdAt: v.number() }).index("by_user", ["userId"]),
