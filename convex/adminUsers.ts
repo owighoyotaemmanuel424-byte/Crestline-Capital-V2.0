@@ -27,9 +27,7 @@ export const audit = query({
   handler: async (ctx) => {
     await requireAdmin(ctx);
     const logs = await ctx.db.query("auditLogs").order("desc").take(1000);
-    return Promise.all(logs.map(async (log) => ({
-      ...log,
-      actor: log.actorId ? (() => ctx.db.get(log.actorId).then((user) => user ? publicUser(user) : null))() : null,
-    })));
+    const actors = await Promise.all(logs.map((log) => log.actorId ? ctx.db.get(log.actorId) : null));
+    return logs.map((log, index) => ({ ...log, actor: actors[index] ? publicUser(actors[index]) : null }));
   },
 });
