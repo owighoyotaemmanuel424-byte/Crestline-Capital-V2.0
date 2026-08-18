@@ -29,10 +29,7 @@ export const audit = query({
     const logs = await ctx.db.query("auditLogs").order("desc").take(1000);
     return Promise.all(logs.map(async (log) => ({
       ...log,
-      actor: log.actorId ? (() => {
-        const actor = ctx.db.get(log.actorId);
-        return actor.then((user) => user ? publicUser(user) : null);
-      })() : null,
+      actor: log.actorId ? (() => ctx.db.get(log.actorId).then((user) => user ? publicUser(user) : null))() : null,
     })));
   },
 });
