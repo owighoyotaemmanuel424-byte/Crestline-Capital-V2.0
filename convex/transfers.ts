@@ -34,6 +34,7 @@ export const create = mutation({
     if (sender.isFrozen) throw new Error("ACCOUNT_FROZEN");
     if (!/^[A-Za-z0-9._:-]{16,128}$/.test(args.idempotencyKey)) throw new Error("INVALID_IDEMPOTENCY_KEY");
     if (!Number.isFinite(args.amount) || args.amount <= 0 || args.amount > 1000000) throw new Error("INVALID_AMOUNT");
+    if (Math.round(args.amount * 100) !== args.amount * 100) throw new Error("AMOUNT_MUST_HAVE_AT_MOST_TWO_DECIMALS");
     if (args.description && args.description.length > 160) throw new Error("INVALID_DESCRIPTION");
     if (!/^\d{4,6}$/.test(args.pin)) throw new Error("INVALID_PIN");
     if (!sender.pinHash || !(await bcrypt.compare(args.pin, sender.pinHash))) throw new Error("INVALID_PIN");
@@ -45,13 +46,13 @@ export const create = mutation({
     const recipient = await ctx.db.query("users").withIndex("by_accountNumber", (q) => q.eq("accountNumber", args.recipientAccountNumber)).unique();
     if (!recipient) throw new Error("RECIPIENT_NOT_FOUND");
     if (recipient.isFrozen) throw new Error("RECIPIENT_FROZEN");
-    if (recipient._id === sender._id) throw new Error("SELF_TRANSFER");
+    if (recipient._id.toString() === sender._id.toString()) throw new Error("SELF_TRANSFER");
     if (args.type !== "internal") throw new Error("EXTERNAL_TRANSFER_NOT_CONFIGURED");
 
     const receiverAccount = await getPrimaryAccount(ctx, recipient._id);
     if (senderAccount.currency !== receiverAccount.currency) throw new Error("CURRENCY_MISMATCH");
-    const fee = feeFor(args.amount, args.type);
-    const total = args.amount + fee;
+    const fee = Number(feeFor(args.amount, args.type).toFixed(2));
+    const total = Number((args.amount + fee).toFixed(2));
     if (senderAccount.availableBalance < total) throw new Error("INSUFFICIENT_FUNDS");
 
     const todayStart = new Date();
@@ -79,8 +80,8 @@ export const create = mutation({
 
     await ctx.db.insert("walletLedger", { accountId: senderAccount._id, userId: sender._id, transactionId, amount: total, currency: senderAccount.currency, direction: "DEBIT", type: "TRANSFER", status: "POSTED", reference: ref, createdAt: now });
     await ctx.db.insert("walletLedger", { accountId: receiverAccount._id, userId: recipient._id, transactionId, amount: args.amount, currency: receiverAccount.currency, direction: "CREDIT", type: "TRANSFER", status: "POSTED", reference: ref, createdAt: now });
-    await ctx.db.patch(senderAccount._id, { availableBalance: senderAccount.availableBalance - total });
-    await ctx.db.patch(receiverAccount._id, { availableBalance: receiverAccount.availableBalance + args.amount });
+    await ctx.db.patch(senderAccount._id, { availableBalance: Number((senderAccount.availableBalance - total).toFixed(2)) });
+    await ctx.db.patch(receiverAccount._id, { availableBalance: Number((receiverAccount.availableBalance + args.amount).toFixed(2)) });
 
     const response = { transactionId, reference: ref, amount: args.amount, fee, total, currency: senderAccount.currency, status: "SUCCESS", deliveryStatus: "COMPLETED", createdAt: now };
     await ctx.db.insert("transferRequests", { userId: sender._id, idempotencyKey: args.idempotencyKey, transactionId, status: "SUCCESS", response, createdAt: now });
