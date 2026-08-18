@@ -1,6 +1,6 @@
 {
   "framework": "nextjs",
-  "buildCommand": "npx convex deploy --cmd \"next build\" --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL",
+  "buildCommand": "npx convex deploy --cmd 'npm run build' --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL",
   "installCommand": "npm install --include=prod --no-audit --no-fund",
   "devCommand": "next dev",
   "cleanUrls": true,
