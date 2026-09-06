@@ -1,0 +1,1 @@
+Funding security boundary: the customer identity and destination account must be derived from the authenticated Convex context. The Paystack secret must never reach browser code. Only verified provider webhooks may finalize a pending deposit, and amount/currency/reference must match the server-created transaction before ledger posting.
