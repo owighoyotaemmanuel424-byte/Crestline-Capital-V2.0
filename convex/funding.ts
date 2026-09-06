@@ -13,7 +13,11 @@ export const createIntent = mutation({
     if (!Number.isFinite(args.amount) || args.amount <= 0 || args.amount > 1000000) throw new Error("INVALID_AMOUNT");
 
     const existing = await ctx.db.query("transactions").withIndex("by_idempotency", (q) => q.eq("senderAccountId", undefined).eq("idempotencyKey", args.idempotencyKey)).unique();
-    if (existing) return { transactionId: existing._id, reference: existing.reference, amount: existing.amount, currency: existing.currency, status: existing.status };
+    if (existing) {
+      if (existing.receiverAccountId === undefined) throw new Error("FUNDING_INTENT_INVALID");
+      if (existing.amount !== args.amount) throw new Error("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_AMOUNT");
+      return { transactionId: existing._id, reference: existing.reference, amount: existing.amount, currency: existing.currency, status: existing.status };
+    }
 
     const account = await getPrimaryAccount(ctx, user._id);
     const now = Date.now();
