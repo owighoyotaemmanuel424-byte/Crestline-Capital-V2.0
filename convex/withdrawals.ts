@@ -4,6 +4,7 @@ import { mutation, query } from "./_generated/server";
 import { getPrimaryAccount, reference, requireUser } from "./helpers";
 
 function feeFor(amount: number) { return Math.min(1000, Math.max(50, amount * 0.01)); }
+const idempotencyPattern = /^[A-Za-z0-9._:-]{16,128}$/;
 
 export const create = mutation({
   args: {
@@ -15,10 +16,17 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const user = await requireUser(ctx);
     if (user.isFrozen) throw new Error("ACCOUNT_FROZEN");
+    if (!idempotencyPattern.test(args.idempotencyKey)) throw new Error("INVALID_IDEMPOTENCY_KEY");
+    if (!/^\d{4,6}$/.test(args.pin)) throw new Error("INVALID_PIN");
     if (!user.pinHash || !(await bcrypt.compare(args.pin, user.pinHash))) throw new Error("INVALID_PIN");
+    if (!Number.isFinite(args.amount) || args.amount <= 0 || args.amount > 1000000) throw new Error("INVALID_AMOUNT");
+    if (!/^[A-Za-z .'-]{2,120}$/.test(args.destination.accountName.trim())) throw new Error("INVALID_ACCOUNT_NAME");
+    if (!/^\d{6,20}$/.test(args.destination.accountNumber)) throw new Error("INVALID_ACCOUNT_NUMBER");
+    if (!/^[A-Za-z0-9_-]{3,20}$/.test(args.destination.bankCode)) throw new Error("INVALID_BANK_CODE");
+
     const existing = await ctx.db.query("withdrawalRequests").withIndex("by_idempotency", (q) => q.eq("userId", user._id).eq("idempotencyKey", args.idempotencyKey)).unique();
     if (existing) return existing;
-    if (!Number.isFinite(args.amount) || args.amount <= 0 || args.amount > 1000000) throw new Error("INVALID_AMOUNT");
+
     const account = await getPrimaryAccount(ctx, user._id);
     const fee = feeFor(args.amount);
     const total = args.amount + fee;
@@ -31,6 +39,31 @@ export const create = mutation({
     await ctx.db.insert("walletLedger", { accountId: account._id, userId: user._id, transactionId, amount: total, currency: account.currency, direction: "DEBIT", type: "WITHDRAWAL", status: "HELD", reference: ref, createdAt: now });
     await ctx.db.insert("auditLogs", { actorId: user._id, action: "WITHDRAWAL_REQUESTED", targetId: requestId, reference: ref, metadata: { amount: args.amount, fee, destinationType: args.destination.type }, createdAt: now });
     return { requestId, transactionId, reference: ref, amount: args.amount, fee, total, status: "PENDING" };
+  },
+});
+
+export const cancel = mutation({
+  args: { requestId: v.id("withdrawalRequests") },
+  handler: async (ctx, { requestId }) => {
+    const user = await requireUser(ctx);
+    const request = await ctx.db.get(requestId);
+    if (!request || request.userId !== user._id) throw new Error("WITHDRAWAL_NOT_FOUND");
+    if (request.status !== "PENDING") throw new Error("WITHDRAWAL_NOT_CANCELLABLE");
+
+    const transaction = await ctx.db.query("transactions").withIndex("by_reference", (q) => q.eq("reference", request.reference)).unique();
+    if (!transaction || !transaction.senderAccountId) throw new Error("WITHDRAWAL_TRANSACTION_NOT_FOUND");
+    const account = await ctx.db.get(transaction.senderAccountId);
+    if (!account) throw new Error("ACCOUNT_NOT_FOUND");
+    const ledger = await ctx.db.query("walletLedger").withIndex("by_transaction", (q) => q.eq("transactionId", transaction._id)).unique();
+    if (!ledger || ledger.status !== "HELD") throw new Error("WITHDRAWAL_LEDGER_STATE_INVALID");
+
+    const now = Date.now();
+    await ctx.db.patch(requestId, { status: "CANCELLED", updatedAt: now });
+    await ctx.db.patch(transaction._id, { status: "CANCELLED", deliveryStatus: "CANCELLED" });
+    await ctx.db.patch(ledger._id, { status: "RELEASED" });
+    await ctx.db.patch(account._id, { availableBalance: account.availableBalance + request.total });
+    await ctx.db.insert("auditLogs", { actorId: user._id, action: "WITHDRAWAL_CANCELLED", targetId: requestId, reference: request.reference, metadata: { amount: request.amount, fee: request.fee }, createdAt: now });
+    return { ok: true, status: "CANCELLED", restored: request.total };
   },
 });
 
