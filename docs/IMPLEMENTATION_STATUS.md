@@ -1,0 +1,1 @@
+Implemented: withdrawal lifecycle hardening, authenticated funding intent, verified Paystack charge reconciliation, event deduplication, amount/currency checks, ledger credit protection, audit and notifications. Outstanding: wire UI/provider initialization and run deployed end-to-end tests.
