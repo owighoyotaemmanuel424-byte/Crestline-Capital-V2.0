@@ -1,0 +1,1 @@
+Crestline Capital production hardening branch: withdrawal lifecycle safeguards and Paystack funding reconciliation are implemented. Deployment and real-money end-to-end verification remain required before production launch.
