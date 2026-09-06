@@ -1,0 +1,1 @@
+Do not ship this branch as a real banking production deployment until authenticated Paystack initialization is wired, production secrets are configured securely, CI passes, and a deployed end-to-end payment/ledger reconciliation test has passed.
