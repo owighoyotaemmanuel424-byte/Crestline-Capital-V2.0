@@ -1,0 +1,5 @@
+Branch: production/withdrawal-lifecycle-hardening
+Funding: server-owned intent + webhook reconciliation implemented
+Withdrawal: validation + cancel + admin rejection implemented
+Production deployment: not yet verified
+Real Paystack E2E: not yet verified

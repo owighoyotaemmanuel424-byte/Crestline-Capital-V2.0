@@ -1,0 +1,1 @@
+External bank settlement remains intentionally unimplemented until a real provider workflow is configured. The application must never display a successful withdrawal merely because a local request was created; settlement status must come from the provider or an authorized operator workflow.
